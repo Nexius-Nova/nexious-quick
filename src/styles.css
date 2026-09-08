@@ -1527,3 +1527,43 @@ button:disabled { cursor: not-allowed; }
 .placeholder-input-row .n-input {
   flex: 1;
 }
+
+/* ---------- 应用设置：检查更新 ---------- */
+
+.update-row {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 16px;
+  flex-wrap: wrap;
+}
+.update-main {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  min-width: 220px;
+}
+.update-label {
+  font-size: 13px;
+  font-weight: 500;
+  color: var(--text);
+}
+.update-meta {
+  font-size: 12px;
+  color: var(--sub);
+  line-height: 1.6;
+}
+.update-meta.ok {
+  color: #18a058;
+}
+.update-meta.new {
+  color: var(--primary);
+  font-weight: 500;
+}
+.update-meta.fail {
+  color: #d03050;
+}
+.update-actions {
+  display: flex;
+  gap: 8px;
+}
