@@ -530,7 +530,12 @@ struct ReleaseCheck {
 /// 检查 GitHub 最新 Release：请求网页版 releases/latest 跟随跳转拿到最终标签页地址。
 /// 走网页端点而非 api.github.com，可避免匿名请求触发 API 限流（HTTP 403）。
 #[tauri::command]
-fn check_latest_release() -> Result<ReleaseCheck, String> {
+async fn check_latest_release() -> Result<ReleaseCheck, String> {
+    // 网络请求放到后台线程执行，避免阻塞 IPC 导致界面卡顿
+    run_in_background(check_latest_release_inner).await
+}
+
+fn check_latest_release_inner() -> Result<ReleaseCheck, String> {
     const RELEASES_URL: &str = "https://github.com/Nexius-Nova/nexious-quick/releases/latest";
     let script = r#"
 $ErrorActionPreference = 'SilentlyContinue'
