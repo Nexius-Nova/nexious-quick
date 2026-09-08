@@ -1,0 +1,58 @@
+{
+  "build": {
+    "beforeDevCommand": "pnpm dev",
+    "devUrl": "http://localhost:1420",
+    "beforeBuildCommand": "pnpm build",
+    "frontendDist": "../dist"
+  },
+  "productName": "Nexious Quick",
+  "version": "0.1.0",
+  "identifier": "com.nexious.quick",
+  "app": {
+    "windows": [
+      {
+        "label": "main",
+        "decorations": false,
+        "transparent": true,
+        "shadow": false,
+        "alwaysOnTop": true,
+        "skipTaskbar": true,
+        "center": true,
+        "resizable": false,
+        "minWidth": 480,
+        "minHeight": 64,
+        "maxWidth": 480,
+        "maxHeight": 800,
+        "width": 480,
+        "height": 64,
+        "visible": true,
+        "title": "Nexious Quick"
+      },
+      {
+        "label": "settings",
+        "decorations": false,
+        "center": true,
+        "resizable": true,
+        "minWidth": 920,
+        "minHeight": 620,
+        "width": 980,
+        "height": 680,
+        "visible": false,
+        "title": "Nexious Quick 设置"
+      }
+    ],
+    "security": {
+      "csp": null
+    }
+  },
+  "bundle": {
+    "active": true,
+    "targets": "all",
+    "icon": [
+      "icons/icon.ico",
+      "icons/icon-32.png",
+      "icons/icon-128.png",
+      "icons/icon-256.png"
+    ]
+  }
+}

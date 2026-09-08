@@ -1,0 +1,89 @@
+- generic [ref=e3]:
+  - generic [ref=e4]:
+    - generic [ref=e5]:
+      - img [ref=e7]:
+        - img [ref=e8]
+      - generic [ref=e10]: 快速启动
+    - generic [ref=e11]:
+      - button "最小化" [disabled] [ref=e12]:
+        - img [ref=e13]:
+          - img [ref=e14]
+      - button "最大化" [disabled] [ref=e15]:
+        - img [ref=e16]:
+          - img [ref=e17]
+      - button "全屏" [ref=e19]:
+        - img [ref=e20]:
+          - img [ref=e21]
+      - button "关闭" [disabled] [ref=e30]:
+        - img [ref=e31]:
+          - img [ref=e32]
+  - generic [ref=e35]:
+    - complementary [ref=e36]:
+      - navigation [ref=e37]:
+        - button "启动数据" [ref=e38]:
+          - img [ref=e39]:
+            - img [ref=e40]
+          - generic [ref=e50]: 启动数据
+        - button "外观设置" [ref=e51]:
+          - img [ref=e52]:
+            - img [ref=e53]
+          - generic [ref=e60]: 外观设置
+        - button "应用设置" [active] [ref=e61]:
+          - img [ref=e62]:
+            - img [ref=e63]
+          - generic [ref=e65]: 应用设置
+      - generic [ref=e66]: v1.0.0
+    - main [ref=e67]:
+      - generic [ref=e277]:
+        - heading "应用设置" [level=1] [ref=e279]
+        - generic [ref=e280]:
+          - heading "启动与窗口" [level=2] [ref=e281]
+          - generic [ref=e282]:
+            - generic [ref=e283]: 开机自启动
+            - switch "开机自启动" [ref=e284]
+          - generic [ref=e287]:
+            - generic [ref=e288]: 启动项目后隐藏搜索窗口
+            - switch "启动项目后隐藏搜索窗口" [checked] [ref=e289]
+          - generic [ref=e292]:
+            - generic [ref=e293]: 失去焦点时隐藏搜索窗口
+            - switch "失去焦点时隐藏搜索窗口" [ref=e294]
+          - generic [ref=e297]:
+            - generic [ref=e298]: 鼠标悬停原位置唤起窗口
+            - switch "鼠标悬停原位置唤起窗口" [ref=e299]
+        - generic [ref=e302]:
+          - heading "快捷键" [level=2] [ref=e303]
+          - generic [ref=e304]:
+            - generic [ref=e305]: 全局快捷键
+            - generic [ref=e306]:
+              - generic [ref=e307]:
+                - img [ref=e308]:
+                  - img [ref=e309]
+                - generic [ref=e311]: Alt + Space
+              - button "修改" [ref=e312] [cursor=pointer]:
+                - img [ref=e313]:
+                  - img [ref=e314]
+                - text: 修改
+              - button "保存" [disabled] [ref=e317]:
+                - generic [ref=e318]: 保存
+        - generic [ref=e319]:
+          - heading "搜索" [level=2] [ref=e320]
+          - generic [ref=e321]:
+            - generic [ref=e322]: 默认搜索引擎
+            - generic "默认搜索引擎" [ref=e323]:
+              - generic [ref=e325] [cursor=pointer]:
+                - generic "Google" [ref=e326]:
+                  - generic [ref=e327]: Google
+                - img "loading" [ref=e328]:
+                  - img [ref=e333]
+        - generic [ref=e335]:
+          - heading "关于" [level=2] [ref=e336]
+          - generic [ref=e337]:
+            - img [ref=e339]:
+              - img [ref=e340]
+            - generic [ref=e342]:
+              - strong [ref=e343]: Nexious Quick
+              - generic [ref=e344]: 版本 0.1.0
+            - button "退出应用" [disabled] [ref=e345]:
+              - img [ref=e347]:
+                - img [ref=e348]
+              - generic [ref=e351]: 退出应用
