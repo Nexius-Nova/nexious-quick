@@ -81,6 +81,18 @@ function toggleSidebar() {
 
 let unFocus: (() => void) | null = null
 let unResize: (() => void) | null = null
+let focusReloadTimer: number | undefined
+
+// 打开窗口/重新聚焦时数据量大，延迟并去抖刷新，避免占用首帧导致卡顿
+function scheduleReloadItems() {
+  window.clearTimeout(focusReloadTimer)
+  focusReloadTimer = window.setTimeout(() => void reloadItems(), 260)
+}
+onUnmounted(() => {
+  window.clearTimeout(focusReloadTimer)
+  unFocus?.()
+  unResize?.()
+})
 onMounted(() => {
   if (isTauri) {
     const win = getCurrentWindow()
@@ -92,13 +104,12 @@ onMounted(() => {
     void win.onResized(() => void refreshWindowState()).then((off) => (unResize = off))
     getCurrentWindow()
       .onFocusChanged(({ payload }) => {
-        if (payload) void reloadItems()
+        if (payload) scheduleReloadItems()
       })
       .then((off) => (unFocus = off))
       .catch(() => {})
   }
 })
-onUnmounted(() => { unFocus?.(); unResize?.() })
 </script>
 
 <template>
@@ -155,9 +166,13 @@ onUnmounted(() => { unFocus?.(); unResize?.() })
         <NAlert v-if="store.settingsError" type="error" class="settings-error" :title="store.settingsError">
           <NButton size="small" :loading="store.savingSettings" @click="flushSettings">重试保存</NButton>
         </NAlert>
-        <DataPage v-if="page === 'data'" />
-        <AppearancePage v-else-if="page === 'appearance'" />
-        <ApplicationPage v-else />
+        <Transition name="page" mode="out-in">
+          <KeepAlive>
+            <DataPage v-if="page === 'data'" key="data" />
+            <AppearancePage v-else-if="page === 'appearance'" key="appearance" />
+            <ApplicationPage v-else key="application" />
+          </KeepAlive>
+        </Transition>
       </main>
     </div>
   </div>
