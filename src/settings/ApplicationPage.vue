@@ -26,6 +26,7 @@ const releaseUrl = ref('')
 
 const UPDATE_REPO = 'Nexius-Nova/nexious-quick'
 const RELEASES_URL = `https://github.com/${UPDATE_REPO}/releases/latest`
+// 浏览器调试降级用；桌面端（Tauri）改走后端命令，避免 GitHub API 匿名限流
 const UPDATE_API = `https://api.github.com/repos/${UPDATE_REPO}/releases/latest`
 
 async function loadAppVersion() {
@@ -56,6 +57,42 @@ function isNewerVersion(latest: string, current: string): boolean {
   return false
 }
 
+interface ReleaseCheckResult {
+  found: boolean
+  tag: string
+  url: string
+}
+
+// 桌面端：走后端命令（GitHub 网页跳转），避免 api.github.com 匿名限流
+async function fetchNativeRelease(): Promise<ReleaseCheckResult> {
+  const result = await invoke<{ found: boolean; url: string }>('check_latest_release')
+  if (!result.found) return { found: false, tag: '', url: '' }
+  const tag = extractTagFromUrl(result.url)
+  if (!tag) throw new Error('未能识别 GitHub 最新版本号')
+  return { found: true, tag, url: result.url }
+}
+
+// 浏览器调试环境无法调用后端命令，降级走 GitHub API
+async function fetchApiRelease(): Promise<ReleaseCheckResult> {
+  const response = await fetch(UPDATE_API, {
+    headers: { Accept: 'application/vnd.github+json' },
+  })
+  if (!response.ok) {
+    if (response.status === 404) return { found: false, tag: '', url: '' }
+    throw new Error(`GitHub 接口返回 ${response.status}`)
+  }
+  const data = await response.json()
+  const tag = String(data?.tag_name ?? '').replace(/^v/i, '')
+  if (!tag) throw new Error('GitHub 返回数据中缺少版本号')
+  return { found: true, tag, url: String(data?.html_url ?? RELEASES_URL) }
+}
+
+// 从 GitHub Releases 跳转地址（…/releases/tag/v0.1.1）中提取不带 v 前缀的版本号
+function extractTagFromUrl(url: string): string {
+  const match = url.match(/\/tag\/(?:v)?([^/?#]+)/i)
+  return match ? match[1] : ''
+}
+
 async function checkForUpdates() {
   if (checkingUpdate.value) return
   checkingUpdate.value = true
@@ -64,22 +101,14 @@ async function checkForUpdates() {
   latestVersion.value = ''
   releaseUrl.value = ''
   try {
-    const response = await fetch(UPDATE_API, {
-      headers: { Accept: 'application/vnd.github+json' },
-    })
-    if (!response.ok) {
-      if (response.status === 404) {
-        updateState.value = 'latest'
-        return
-      }
-      throw new Error(`GitHub 接口返回 ${response.status}`)
+    const release = isTauri ? await fetchNativeRelease() : await fetchApiRelease()
+    if (!release.found) {
+      updateState.value = 'latest'
+      return
     }
-    const data = await response.json()
-    const tag = String(data?.tag_name ?? '').replace(/^v/i, '')
-    if (!tag) throw new Error('GitHub 返回数据中缺少版本号')
-    latestVersion.value = tag
-    releaseUrl.value = String(data?.html_url ?? RELEASES_URL)
-    updateState.value = isNewerVersion(tag, currentVersion.value) ? 'outdated' : 'latest'
+    latestVersion.value = release.tag
+    releaseUrl.value = release.url || RELEASES_URL
+    updateState.value = isNewerVersion(release.tag, currentVersion.value) ? 'outdated' : 'latest'
   } catch (error) {
     updateState.value = 'error'
     updateError.value = String(error)

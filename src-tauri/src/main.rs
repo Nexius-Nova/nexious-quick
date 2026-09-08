@@ -521,6 +521,59 @@ fn open_url(app: AppHandle, url: String) -> Result<(), String> {
         .map_err(|e| err_msg("打开网站失败", e))
 }
 
+#[derive(Serialize)]
+struct ReleaseCheck {
+    found: bool,
+    url: String,
+}
+
+/// 检查 GitHub 最新 Release：请求网页版 releases/latest 跟随跳转拿到最终标签页地址。
+/// 走网页端点而非 api.github.com，可避免匿名请求触发 API 限流（HTTP 403）。
+#[tauri::command]
+fn check_latest_release() -> Result<ReleaseCheck, String> {
+    const RELEASES_URL: &str = "https://github.com/Nexius-Nova/nexious-quick/releases/latest";
+    let script = r#"
+$ErrorActionPreference = 'SilentlyContinue'
+$url = '{url}'
+$out = ''
+try {
+    $resp = Invoke-WebRequest -UseBasicParsing -Uri $url -TimeoutSec 12 -MaximumRedirection 5
+    if ($resp.BaseResponse.ResponseUri) {
+        $out = $resp.BaseResponse.ResponseUri.AbsoluteUri
+    }
+} catch {
+    if ($_.Exception.Response) {
+        $status = [int]$_.Exception.Response.StatusCode
+        if ($status -eq 404) { $out = '__NOT_FOUND__' }
+    }
+}
+[Console]::OutputEncoding = [System.Text.Encoding]::ASCII
+[Console]::Write($out)
+"#;
+    let script = script.replace("{url}", RELEASES_URL);
+    let mut cmd = std::process::Command::new("powershell");
+    cmd.args([
+        "-NoProfile",
+        "-NonInteractive",
+        "-ExecutionPolicy",
+        "Bypass",
+        "-Command",
+        &script,
+    ]);
+    hide_console(&mut cmd);
+    let output = cmd
+        .output()
+        .map_err(|e| err_msg("检查更新失败：无法启动 PowerShell", e))?;
+    let text = String::from_utf8_lossy(&output.stdout).trim().to_string();
+    if text == "__NOT_FOUND__" {
+        return Ok(ReleaseCheck { found: false, url: String::new() });
+    }
+    if text.starts_with("https://") {
+        return Ok(ReleaseCheck { found: true, url: text });
+    }
+    Err("检查更新失败：无法连接 GitHub，请检查网络后重试".into())
+}
+
 fn err_msg(cn: &str, e: impl std::fmt::Display) -> String {
     format!("{cn}：{e}")
 }
@@ -1967,6 +2020,7 @@ fn main() {
             list_directory,
             open_item,
             open_url,
+            check_latest_release,
             sync_apps,
             sync_folders,
             sync_bookmarks,
