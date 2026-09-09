@@ -33,6 +33,8 @@ export interface AppSettings {
   accent: string
   opacity: number
   searchRadius: number
+  searchWidth: number
+  searchHeight: number
   animationEffect: LauncherAnimation
   placeholderText: string
   launcherIcon: string
@@ -58,6 +60,8 @@ export const DEFAULT_SETTINGS: AppSettings = {
   accent: 'blue',
   opacity: 85,
   searchRadius: 16,
+  searchWidth: 480,
+  searchHeight: 40,
   animationEffect: 'crossfade',
   placeholderText: '输入内容，快速启动...',
   launcherIcon: 'app',

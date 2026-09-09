@@ -12,6 +12,17 @@ use tauri_plugin_opener::OpenerExt;
 
 use base64::Engine as _;
 
+#[cfg(windows)]
+#[link(name = "dwmapi")]
+extern "system" {
+    fn DwmSetWindowAttribute(
+        hwnd: *mut core::ffi::c_void,
+        dw_attribute: u32,
+        pv_attribute: *const u32,
+        cb_attribute: u32,
+    ) -> i32;
+}
+
 pub const MAIN_WINDOW: &str = "main";
 pub const SETTINGS_WINDOW: &str = "settings";
 pub const ITEMS_CHANGED_EVENT: &str = "nexious:items-changed";
@@ -1930,13 +1941,36 @@ fn focus_launcher(app: AppHandle) -> Result<(), String> {
 }
 
 #[tauri::command]
-fn resize_launcher(app: AppHandle, height: f64) -> Result<(), String> {
+fn resize_launcher(app: AppHandle, width: f64, height: f64) -> Result<(), String> {
     if let Some(w) = app.get_webview_window(MAIN_WINDOW) {
-        let h = height.clamp(64.0, 760.0);
-        w.set_size(LogicalSize::new(480.0, h)).map_err(|e| e.to_string())?;
+        let width = width.clamp(320.0, 720.0);
+        let h = height.clamp(48.0, 760.0);
+        w.set_size(LogicalSize::new(width, h)).map_err(|e| e.to_string())?;
     }
     Ok(())
 }
+
+/// Windows 11 默认会给无边框窗口套用系统圆角，会盖过 CSS 的 border-radius，
+/// 导致启动器“搜索框圆角”设置无法生效。这里关闭系统圆角，让外观完全由 CSS 控制。
+#[cfg(windows)]
+fn disable_windows_corner_rounding(window: &tauri::WebviewWindow) {
+    if let Ok(hwnd) = window.hwnd() {
+        const DWMWA_WINDOW_CORNER_PREFERENCE: u32 = 33;
+        const DWMWCP_DONOTROUND: u32 = 1;
+        let preference = DWMWCP_DONOTROUND;
+        unsafe {
+            DwmSetWindowAttribute(
+                hwnd.0 as *mut core::ffi::c_void,
+                DWMWA_WINDOW_CORNER_PREFERENCE,
+                &preference,
+                core::mem::size_of::<u32>() as u32,
+            );
+        }
+    }
+}
+
+#[cfg(not(windows))]
+fn disable_windows_corner_rounding(_window: &tauri::WebviewWindow) {}
 
 #[tauri::command]
 fn quit_app(app: AppHandle) -> Result<(), String> {
@@ -2118,6 +2152,8 @@ fn main() {
                 let h = handle.clone();
                 let started_at = std::time::Instant::now();
                 if let Some(main) = h.get_webview_window(MAIN_WINDOW) {
+                    // 关闭 Windows 11 系统自动圆角，让“搜索框圆角”设置精确生效
+                    disable_windows_corner_rounding(&main);
                     if autostart {
                         let _ = main.hide();
                     } else {

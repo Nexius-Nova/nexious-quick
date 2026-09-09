@@ -6,7 +6,6 @@ import {
   DesktopOutline,
   ImageOutline,
   MoonOutline,
-  MoveOutline,
   SettingsOutline,
   SunnyOutline,
 } from '@vicons/ionicons5'
@@ -41,6 +40,25 @@ function setAnimationEffect(effect: LauncherAnimation) {
 
 const customIcon = computed(() => store.settings.launcherIcon.startsWith('data:'))
 const iconFileEl = ref<HTMLInputElement | null>(null)
+
+// 预览区把主窗口按“宽度 260px 上限”等比缩放成迷你预览，尺寸与圆角比例和主窗口保持一致
+const previewScale = computed(() => {
+  const width = store.settings.searchWidth
+  if (!width) return 1
+  return Math.min(1, 260 / width)
+})
+const previewStageStyle = computed(() => ({
+  width: `${Math.round(store.settings.searchWidth * previewScale.value)}px`,
+  // 品牌图标高度固定 34px，输入框高度较小时搜索行高度仍以图标为准
+  height: `${Math.round((Math.max(store.settings.searchHeight, 34) + 24) * previewScale.value)}px`,
+}))
+const previewRenderStyle = computed(() => ({
+  width: `${store.settings.searchWidth}px`,
+  '--panel-alpha': String(store.settings.opacity / 100),
+  '--search-radius': `${store.settings.searchRadius}px`,
+  '--search-height': `${store.settings.searchHeight}px`,
+  transform: `scale(${previewScale.value})`,
+}))
 
 function pickBuiltinIcon(key: string) {
   store.settings.launcherIcon = key
@@ -183,10 +201,11 @@ function onPlaceholderBlur() {
               <NSwitch v-model:value="store.settings.hoverShow" size="small" />
             </div>
             <div class="switch-row">
-              <span>显示图标</span>
+              <span>显示启动器图标</span>
               <NSwitch v-model:value="store.settings.showIcons" size="small" />
             </div>
           </div>
+          <p class="muted-tip">关闭后仅隐藏启动器左上角的品牌图标，搜索结果下拉列表中的图标始终显示。</p>
         </div>
 
         <div class="field-group narrow">
@@ -195,6 +214,24 @@ function onPlaceholderBlur() {
             <NSlider v-model:value="store.settings.searchRadius" :step="1" :min="0" :max="32" :tooltip="false" />
             <span class="slider-value">{{ store.settings.searchRadius }}px</span>
           </div>
+        </div>
+
+        <div class="field-group narrow">
+          <div class="field-label">搜索框宽度</div>
+          <div class="slider-row">
+            <NSlider v-model:value="store.settings.searchWidth" :step="5" :min="320" :max="720" :tooltip="false" />
+            <span class="slider-value">{{ store.settings.searchWidth }}px</span>
+          </div>
+          <p class="muted-tip">控制启动器主窗口的整体宽度。</p>
+        </div>
+
+        <div class="field-group narrow">
+          <div class="field-label">搜索框高度</div>
+          <div class="slider-row">
+            <NSlider v-model:value="store.settings.searchHeight" :step="2" :min="36" :max="64" :tooltip="false" />
+            <span class="slider-value">{{ store.settings.searchHeight }}px</span>
+          </div>
+          <p class="muted-tip">控制搜索输入框的垂直高度，启动器默认收起的窗口高度会随之变化。</p>
         </div>
 
         <div class="field-group">
@@ -278,24 +315,29 @@ function onPlaceholderBlur() {
 
       <div class="appearance-preview">
         <div class="preview-wall">
-          <div
-            class="preview-launcher"
-            :class="{ dark: isDark }"
-            :style="{
-              '--panel-alpha': String(store.settings.opacity / 100),
-              '--search-radius': `${store.settings.searchRadius}px`,
-            }"
-          >
-            <div v-if="store.settings.showIcons" class="brand-chip small">
-              <BrandIcon :size="13" />
+          <div class="preview-stage" :style="previewStageStyle">
+            <div
+              class="launcher preview-render"
+              :data-accent="store.settings.accent"
+              :class="{ dark: isDark }"
+              :style="previewRenderStyle"
+            >
+              <div class="search-row">
+                <button v-if="store.settings.showIcons" class="launcher-drag brand-chip" aria-hidden="true" tabindex="-1">
+                  <BrandIcon :size="18" />
+                </button>
+                <input
+                  class="search-input"
+                  type="text"
+                  readonly
+                  tabindex="-1"
+                  :placeholder="store.settings.placeholderText || '输入内容，快速启动...'"
+                />
+                <span class="icon-btn" aria-hidden="true">
+                  <NIcon :component="SettingsOutline" :size="17" />
+                </span>
+              </div>
             </div>
-            <span v-else class="preview-drag-icon" aria-hidden="true">
-              <NIcon :component="MoveOutline" :size="17" />
-            </span>
-            <span class="preview-text">{{ store.settings.placeholderText || '输入内容，快速启动...' }}</span>
-            <span class="preview-gear" aria-hidden="true">
-              <NIcon :component="SettingsOutline" :size="15" />
-            </span>
           </div>
         </div>
       </div>

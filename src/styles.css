@@ -200,7 +200,7 @@ button {
   background: transparent;
   font-size: 15px;
   color: var(--text);
-  height: 40px;
+  height: var(--search-height, 40px);
   caret-color: var(--primary);
 }
 .search-input::placeholder {
@@ -967,43 +967,16 @@ button {
   background: #a9c6e2;
 }
 
-.preview-launcher {
-  width: 236px;
-  border-radius: var(--search-radius, 12px);
-  background: rgba(var(--panel-rgb), var(--panel-alpha, 1));
-  box-shadow: 0 10px 30px rgba(10, 25, 55, 0.35);
-  display: flex;
-  align-items: center;
-  gap: 8px;
-  padding: 5px 9px;
+/* 预览区迷你启动器：内层按真实像素绘制，再整体等比缩放，圆角/尺寸与主窗口比例一致 */
+.preview-stage {
+  position: relative;
 }
-.preview-launcher .brand-chip.small {
-  width: 24px;
-  height: 24px;
-}
-.preview-text {
-  font-size: 11.5px;
-  color: var(--sub);
-  flex: 1;
-  overflow: hidden;
-  text-overflow: ellipsis;
-  white-space: nowrap;
-}
-.preview-drag-icon {
-  width: 24px;
-  height: 24px;
-  display: grid;
-  place-items: center;
-  color: var(--sub);
-  flex-shrink: 0;
-}
-.preview-gear {
-  width: 14px;
-  height: 14px;
-  display: grid;
-  place-items: center;
-  color: var(--sub);
-  flex-shrink: 0;
+.preview-render {
+  position: absolute;
+  left: 0;
+  top: 0;
+  transform-origin: 0 0;
+  pointer-events: none;
 }
 
 /* ---------- 关于 ---------- */

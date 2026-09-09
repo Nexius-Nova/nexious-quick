@@ -112,7 +112,7 @@ onMounted(() => {
     <div class="titlebar" @mousedown="startDrag" @dblclick.self="toggleMaximize">
       <div class="tb-brand" @dblclick="toggleMaximize">
         <div class="brand-chip small"><BrandIcon :size="15" /></div>
-        <b>快速启动</b>
+        <b>Nexious Quick</b>
       </div>
       <div class="tb-controls">
         <motion.button

@@ -3,7 +3,7 @@ import { computed, nextTick, onMounted, onUnmounted, ref, watch } from 'vue'
 import { invoke } from '@tauri-apps/api/core'
 import { getCurrentWindow } from '@tauri-apps/api/window'
 import { useMessage } from 'naive-ui'
-import { CloseOutline, MoveOutline, SearchOutline, SettingsOutline } from '@vicons/ionicons5'
+import { CloseOutline, SearchOutline, SettingsOutline } from '@vicons/ionicons5'
 import { NIcon } from 'naive-ui'
 import { motion } from 'motion-v'
 import { isTauri } from './adapter'
@@ -112,12 +112,12 @@ function scheduleResize() {
       const panel = launcherEl.value
       if (!panel) return
       const h = Math.max(48, Math.ceil(panel.offsetHeight))
-      invoke('resize_launcher', { height: h }).catch(() => {})
+      invoke('resize_launcher', { width: store.settings.searchWidth, height: h }).catch(() => {})
     })
   })
 }
 
-watch([query, results, () => store.settings.showIcons], () => {
+watch([query, results, () => store.settings.showIcons, () => store.settings.searchWidth, () => store.settings.searchHeight], () => {
   selectedIndex.value = 0
   scheduleResize()
 })
@@ -239,13 +239,14 @@ onUnmounted(() => {
     :style="{
       '--panel-alpha': String(store.settings.opacity / 100),
       '--search-radius': `${store.settings.searchRadius}px`,
+      '--search-height': `${store.settings.searchHeight}px`,
     }"
     @mouseenter="onPanelEnter"
+    @mousedown="startDrag"
   >
-    <div class="search-row" @mousedown="startDrag">
-      <button class="launcher-drag" :class="store.settings.showIcons ? 'brand-chip' : 'icon-btn'" aria-label="拖动搜索窗口" title="拖动搜索窗口" @mousedown="startDrag">
-        <BrandIcon v-if="store.settings.showIcons" :size="18" />
-        <NIcon v-else :component="MoveOutline" :size="18" />
+    <div class="search-row">
+      <button v-if="store.settings.showIcons" class="launcher-drag brand-chip" aria-label="拖动搜索窗口" title="拖动搜索窗口">
+        <BrandIcon :size="18" />
       </button>
       <input
         ref="inputEl"
@@ -296,9 +297,10 @@ onUnmounted(() => {
           :whileHover="animationProfile.hover"
           :whilePress="{ scale: 0.985 }"
           @click="openItem(r)"
+          @mousedown.stop
           @mouseenter="selectedIndex = idx"
         >
-          <ItemIcon v-if="store.settings.showIcons" :icon="r.icon" :type="r.type" />
+          <ItemIcon :icon="r.icon" :type="r.type" />
           <div class="result-text">
             <b>{{ r.name }}</b>
             <span>{{ r.url }}</span>
@@ -317,9 +319,10 @@ onUnmounted(() => {
           :whileHover="animationProfile.hover"
           :whilePress="{ scale: 0.985 }"
           @click="webSearch"
+          @mousedown.stop
           @mouseenter="selectedIndex = results.length"
         >
-          <div v-if="store.settings.showIcons" class="result-icon plain">
+          <div class="result-icon plain">
             <NIcon :component="SearchOutline" :size="17" />
           </div>
           <div class="result-text single">
