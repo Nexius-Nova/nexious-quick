@@ -17,6 +17,7 @@ import {
   RemoveOutline,
 } from '@vicons/ionicons5'
 import { useRoute } from 'vue-router'
+import { prefetchSettingsPages } from '../router'
 import { isTauri } from '../adapter'
 import { flushSettings, isDark, store } from '../store'
 import BrandIcon from '../components/BrandIcon.vue'
@@ -84,6 +85,8 @@ onUnmounted(() => {
   unResize?.()
 })
 onMounted(() => {
+  // 空闲时预取三个设置页，打包环境首次点开页面时无需等待动态加载
+  prefetchSettingsPages()
   if (isTauri) {
     const win = getCurrentWindow()
     const refreshWindowState = async () => {
