@@ -45,7 +45,7 @@ export const DEFAULT_SETTINGS: AppSettings = {
   opacity: 85,
   searchRadius: 16,
   placeholderText: '输入内容，快速启动...',
-  launcherIcon: 'bolt',
+  launcherIcon: 'app',
   autoHide: true,
   hideOnBlur: false,
   autoStart: false,

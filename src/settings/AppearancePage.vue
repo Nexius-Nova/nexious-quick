@@ -198,7 +198,7 @@ function onPlaceholderBlur() {
               :aria-pressed="store.settings.launcherIcon === opt.key"
               @click="pickBuiltinIcon(opt.key)"
             >
-              <span class="brand-chip icon-option-chip"><NIcon :component="opt.component" :size="15" /></span>
+              <span class="brand-chip icon-option-chip"><img :src="opt.image" alt="" /></span>
               <span>{{ opt.label }}</span>
             </button>
             <button
