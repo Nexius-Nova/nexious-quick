@@ -2120,6 +2120,14 @@ fn main() {
             .build()
     };
     tauri::Builder::default()
+        // 单实例：后台驻留/自启动后再次运行程序时，不再拉起第二个进程，
+        // 而是聚焦到已运行的启动器窗口，避免出现多个后台实例。
+        .plugin(tauri_plugin_single_instance::init(|app, argv, _cwd| {
+            // 第二次实例若来自开机自启（--autostart），保持后台静默；用户主动运行才唤出启动器
+            if !argv.iter().any(|arg| arg == "--autostart") {
+                show_main_window(app);
+            }
+        }))
         .plugin(tauri_plugin_opener::init())
         .plugin(tauri_plugin_dialog::init())
         .plugin(shortcut_plugin)
