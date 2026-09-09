@@ -1,5 +1,0 @@
-- generic [ref=f2e5]:
-  - button "拖动搜索窗口" [ref=f2e6]
-  - textbox "搜索启动项" [active] [ref=f2e10]:
-    - /placeholder: 输入内容，快速启动...
-  - button "设置" [ref=f2e11]

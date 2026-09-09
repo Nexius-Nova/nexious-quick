@@ -1,9 +1,0 @@
-- generic [ref=e5]:
-  - button "拖动搜索窗口" [ref=e6]:
-    - img [ref=e7]:
-      - img [ref=e8]
-  - textbox "搜索启动项" [active] [ref=e10]:
-    - /placeholder: 输入内容，快速启动...
-  - button "设置" [ref=e11]:
-    - img [ref=e12]:
-      - img [ref=e13]
