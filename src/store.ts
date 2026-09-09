@@ -1,7 +1,17 @@
 import { computed, reactive, ref, watch } from 'vue'
 import { invoke } from '@tauri-apps/api/core'
 import { isTauri, storage } from './adapter'
-import { DEFAULT_SETTINGS, SEARCH_ENGINES, accentTheme, type AppSettings, type Item, type ItemType, type ThemeMode } from './types'
+import {
+  DEFAULT_SETTINGS,
+  LAUNCHER_ANIMATION_OPTIONS,
+  SEARCH_ENGINES,
+  accentTheme,
+  type AppSettings,
+  type Item,
+  type ItemType,
+  type LauncherAnimation,
+  type ThemeMode,
+} from './types'
 
 export const store = reactive({
   ready: false,
@@ -31,6 +41,11 @@ function applySettings(map: Record<string, string>) {
     accent: accentTheme(s.accent ?? '').key,
     opacity: clamp(Number(s.opacity ?? DEFAULT_SETTINGS.opacity), 30, 100),
     searchRadius: clamp(Number(s.searchRadius ?? DEFAULT_SETTINGS.searchRadius), 0, 32),
+    animationEffect: (
+      LAUNCHER_ANIMATION_OPTIONS.some((option) => option.key === s.animationEffect)
+        ? s.animationEffect
+        : DEFAULT_SETTINGS.animationEffect
+    ) as LauncherAnimation,
     placeholderText: (s.placeholderText || '').trim().slice(0, 24) || DEFAULT_SETTINGS.placeholderText,
     // 旧版本保存的是内置图标 key，统一迁移到新的应用品牌图标；自定义图片继续保留。
     launcherIcon: s.launcherIcon?.startsWith('data:image/') ? s.launcherIcon : DEFAULT_SETTINGS.launcherIcon,
@@ -63,6 +78,7 @@ function toSettingsMap(s: AppSettings): Record<string, string> {
     accent: s.accent,
     opacity: String(s.opacity),
     searchRadius: String(s.searchRadius),
+    animationEffect: s.animationEffect,
     placeholderText: s.placeholderText,
     launcherIcon: s.launcherIcon,
     autoHide: String(s.autoHide),

@@ -1,6 +1,7 @@
 <script setup lang="ts">
 import { computed, ref } from 'vue'
 import { NIcon, NInput, NSlider, NSwitch, useMessage } from 'naive-ui'
+import { motion } from 'motion-v'
 import {
   DesktopOutline,
   ImageOutline,
@@ -10,7 +11,13 @@ import {
   SunnyOutline,
 } from '@vicons/ionicons5'
 import { isDark, store } from '../store'
-import { ACCENT_THEMES, DEFAULT_SETTINGS, type ThemeMode } from '../types'
+import {
+  ACCENT_THEMES,
+  DEFAULT_SETTINGS,
+  LAUNCHER_ANIMATION_OPTIONS,
+  type LauncherAnimation,
+  type ThemeMode,
+} from '../types'
 import BrandIcon, { LAUNCHER_ICON_OPTIONS } from '../components/BrandIcon.vue'
 
 const message = useMessage()
@@ -26,6 +33,10 @@ function setTheme(mode: ThemeMode) {
 
 function setAccent(key: string) {
   store.settings.accent = key
+}
+
+function setAnimationEffect(effect: LauncherAnimation) {
+  store.settings.animationEffect = effect
 }
 
 const customIcon = computed(() => store.settings.launcherIcon.startsWith('data:'))
@@ -187,26 +198,51 @@ function onPlaceholderBlur() {
         </div>
 
         <div class="field-group">
+          <div class="field-label">搜索结果动画</div>
+          <div class="animation-options" role="group" aria-label="搜索结果动画">
+            <motion.button
+              v-for="option in LAUNCHER_ANIMATION_OPTIONS"
+              :key="option.key"
+              type="button"
+              class="animation-option"
+              :class="{ active: store.settings.animationEffect === option.key }"
+              :aria-pressed="store.settings.animationEffect === option.key"
+              :whileHover="{ y: -2 }"
+              :whilePress="{ scale: 0.98 }"
+              @click="setAnimationEffect(option.key)"
+            >
+              <span class="animation-option-label">{{ option.label }}</span>
+              <span class="animation-option-description">{{ option.description }}</span>
+            </motion.button>
+          </div>
+          <p class="muted-tip">动画仅作用于主窗口的搜索结果列表，清空输入时会立即收起。</p>
+        </div>
+
+        <div class="field-group">
           <div class="field-label">启动器图标</div>
           <div class="icon-options">
-            <button
+            <motion.button
               v-for="opt in LAUNCHER_ICON_OPTIONS"
               :key="opt.key"
               type="button"
               class="icon-option"
               :class="{ active: store.settings.launcherIcon === opt.key }"
               :aria-pressed="store.settings.launcherIcon === opt.key"
+              :whileHover="{ y: -2 }"
+              :whilePress="{ scale: 0.97 }"
               @click="pickBuiltinIcon(opt.key)"
             >
               <span class="brand-chip icon-option-chip"><img :src="opt.image" alt="" /></span>
               <span>{{ opt.label }}</span>
-            </button>
-            <button
+            </motion.button>
+            <motion.button
               type="button"
               class="icon-option"
               :class="{ active: customIcon }"
               :aria-pressed="customIcon"
               title="上传自定义图标"
+              :whileHover="{ y: -2 }"
+              :whilePress="{ scale: 0.97 }"
               @click="openIconPicker"
             >
               <span class="brand-chip icon-option-chip">
@@ -214,7 +250,7 @@ function onPlaceholderBlur() {
                 <NIcon v-else :component="ImageOutline" :size="16" />
               </span>
               <span>{{ customIcon ? '自定义' : '自定义…' }}</span>
-            </button>
+            </motion.button>
           </div>
           <div v-if="customIcon" class="icon-custom-row">
             <span class="muted-text">已使用自定义图片，上传后自动缩放为 128×128。</span>

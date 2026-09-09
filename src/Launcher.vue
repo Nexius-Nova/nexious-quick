@@ -5,6 +5,7 @@ import { getCurrentWindow } from '@tauri-apps/api/window'
 import { useMessage } from 'naive-ui'
 import { CloseOutline, MoveOutline, SearchOutline, SettingsOutline } from '@vicons/ionicons5'
 import { NIcon } from 'naive-ui'
+import { motion } from 'motion-v'
 import { isTauri } from './adapter'
 import { isDark, reloadItems, searchItems, store } from './store'
 import { SEARCH_ENGINES, TYPE_LABEL, type Item } from './types'
@@ -17,6 +18,76 @@ const selectedIndex = ref(0)
 const inputEl = ref<HTMLInputElement | null>(null)
 const launcherEl = ref<HTMLElement | null>(null)
 const launching = ref(false)
+
+const resultEase = [0.22, 1, 0.36, 1] as const
+
+const animationProfile = computed(() => {
+  switch (store.settings.animationEffect) {
+    case 'reveal':
+      // 从搜索框方向向下“展开”
+      return {
+        initial: { opacity: 0, y: -14, scaleY: 0.7 },
+        animate: { opacity: 1, y: 0, scaleY: 1 },
+        hover: { y: -1 },
+      }
+    case 'float':
+      // 卡片从下方淡入、上浮到原位
+      return {
+        initial: { opacity: 0, y: 18, scale: 0.92 },
+        animate: { opacity: 1, y: 0, scale: 1 },
+        hover: { y: -2, x: 2 },
+      }
+    case 'spring':
+      // 入场带弹簧回弹浮现
+      return {
+        initial: { opacity: 0, y: 14, scale: 0.95 },
+        animate: { opacity: 1, y: 0, scale: 1 },
+        hover: { y: -2 },
+      }
+    case 'spotlight':
+      // 横向滑入，配合下方 rowAnimate 让选中项横移，形成“光标跟随”效果
+      return {
+        initial: { opacity: 0, x: -18 },
+        animate: { opacity: 1, x: 0 },
+        hover: {},
+      }
+    case 'crossfade':
+    default:
+      return {
+        initial: { opacity: 0 },
+        animate: { opacity: 1 },
+        hover: {},
+      }
+  }
+})
+
+// spotlight：当前选中行额外向右滑出，聚焦反馈跟随光标/方向键移动
+function rowAnimate(index: number) {
+  const target = { ...animationProfile.value.animate }
+  if (store.settings.animationEffect === 'spotlight' && index === selectedIndex.value) {
+    target.x = 8
+  }
+  return target
+}
+
+function resultTransition(index = 0) {
+  if (store.settings.animationEffect === 'spring') {
+    return {
+      type: 'spring' as const,
+      stiffness: 380,
+      damping: 30,
+      mass: 0.6,
+      delay: Math.min(index, 5) * 0.035,
+    }
+  }
+  // 逐行错峰：延迟随行号递增，形成逐行出现/淡入的效果
+  const stagger = store.settings.animationEffect === 'reveal' ? 0.04 : 0.05
+  return {
+    duration: store.settings.animationEffect === 'crossfade' ? 0.2 : 0.3,
+    delay: Math.min(index, 5) * stagger,
+    ease: resultEase,
+  }
+}
 
 const results = computed(() => searchItems(query.value))
 const searchRowUrl = computed(() =>
@@ -163,6 +234,7 @@ onUnmounted(() => {
     ref="launcherEl"
     class="launcher"
     :data-accent="store.settings.accent"
+    :data-effect="store.settings.animationEffect"
     :class="{ dark: isDark }"
     :style="{
       '--panel-alpha': String(store.settings.opacity / 100),
@@ -187,47 +259,74 @@ onUnmounted(() => {
         @mousedown.stop
         @keydown="onKeydown"
       />
-      <button v-if="query" class="icon-btn" aria-label="清除" @mousedown.stop @click="clearQuery">
+      <motion.button
+        v-if="query"
+        class="icon-btn"
+        aria-label="清除"
+        :whileHover="{ scale: 1.08 }"
+        :whilePress="{ scale: 0.9 }"
+        @mousedown.stop
+        @click="clearQuery"
+      >
         <NIcon :component="CloseOutline" :size="16" />
-      </button>
-      <button class="icon-btn" aria-label="设置" title="设置" @mousedown.stop @click="openSettings">
+      </motion.button>
+      <motion.button
+        class="icon-btn"
+        aria-label="设置"
+        title="设置"
+        :whileHover="{ scale: 1.08, rotate: 8 }"
+        :whilePress="{ scale: 0.9, rotate: -4 }"
+        @mousedown.stop
+        @click="openSettings"
+      >
         <NIcon :component="SettingsOutline" :size="17" />
-      </button>
+      </motion.button>
     </div>
 
-    <div v-show="query.trim()" class="dropdown">
-      <div
-        v-for="(r, idx) in results"
-        :key="r.id"
-        class="result-row"
-        :class="{ active: idx === selectedIndex }"
-        :data-selected="idx === selectedIndex"
-        @click="openItem(r)"
-        @mouseenter="selectedIndex = idx"
-      >
-        <ItemIcon v-if="store.settings.showIcons" :icon="r.icon" :type="r.type" />
-        <div class="result-text">
-          <b>{{ r.name }}</b>
-          <span>{{ r.url }}</span>
-        </div>
-        <span class="result-type">{{ TYPE_LABEL[r.type] }}</span>
-        <span class="result-enter">↵</span>
-      </div>
+    <div v-if="query.trim()" class="dropdown">
+        <motion.div
+          v-for="(r, idx) in results"
+          :key="r.id"
+          class="result-row"
+          :class="{ active: idx === selectedIndex }"
+          :data-selected="idx === selectedIndex"
+          :initial="animationProfile.initial"
+          :animate="rowAnimate(idx)"
+          :transition="resultTransition(idx)"
+          :whileHover="animationProfile.hover"
+          :whilePress="{ scale: 0.985 }"
+          @click="openItem(r)"
+          @mouseenter="selectedIndex = idx"
+        >
+          <ItemIcon v-if="store.settings.showIcons" :icon="r.icon" :type="r.type" />
+          <div class="result-text">
+            <b>{{ r.name }}</b>
+            <span>{{ r.url }}</span>
+          </div>
+          <span class="result-type">{{ TYPE_LABEL[r.type] }}</span>
+          <span class="result-enter">↵</span>
+        </motion.div>
 
-      <div
-        class="result-row search-elsewhere"
-        :class="{ active: selectedIndex === results.length }"
-        @click="webSearch"
-        @mouseenter="selectedIndex = results.length"
-      >
-        <div v-if="store.settings.showIcons" class="result-icon plain">
-          <NIcon :component="SearchOutline" :size="17" />
-        </div>
-        <div class="result-text single">
-          <b>未找到？使用{{ store.settings.searchEngine }}搜索引擎搜索 “{{ query.trim() }}”</b>
-        </div>
-        <span class="result-enter">↵</span>
-      </div>
+        <motion.div
+          key="search-elsewhere"
+          class="result-row search-elsewhere"
+          :class="{ active: selectedIndex === results.length }"
+          :initial="animationProfile.initial"
+          :animate="rowAnimate(results.length)"
+          :transition="resultTransition(results.length)"
+          :whileHover="animationProfile.hover"
+          :whilePress="{ scale: 0.985 }"
+          @click="webSearch"
+          @mouseenter="selectedIndex = results.length"
+        >
+          <div v-if="store.settings.showIcons" class="result-icon plain">
+            <NIcon :component="SearchOutline" :size="17" />
+          </div>
+          <div class="result-text single">
+            <b>未找到？使用{{ store.settings.searchEngine }}搜索引擎搜索 “{{ query.trim() }}”</b>
+          </div>
+          <span class="result-enter">↵</span>
+        </motion.div>
     </div>
   </div>
 </template>

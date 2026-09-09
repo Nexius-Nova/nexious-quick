@@ -1,5 +1,18 @@
 export type ItemType = 'application' | 'website' | 'folder' | 'file'
 export type ThemeMode = 'system' | 'light' | 'dark'
+export type LauncherAnimation = 'reveal' | 'float' | 'spring' | 'crossfade' | 'spotlight'
+
+export const LAUNCHER_ANIMATION_OPTIONS: Array<{
+  key: LauncherAnimation
+  label: string
+  description: string
+}> = [
+  { key: 'reveal', label: '垂直展开', description: '结果从搜索框方向向下逐项展开' },
+  { key: 'float', label: '卡片浮出', description: '卡片从下方淡入上浮' },
+  { key: 'spring', label: '弹性浮现', description: '结果项依次带弹簧回弹浮现' },
+  { key: 'crossfade', label: '平稳淡化', description: '平稳淡入，输入过程最平稳' },
+  { key: 'spotlight', label: '聚焦滑动', description: '选中项横向滑出聚焦，像光标一样跟随移动' },
+]
 
 export interface Item {
   id: number
@@ -20,6 +33,7 @@ export interface AppSettings {
   accent: string
   opacity: number
   searchRadius: number
+  animationEffect: LauncherAnimation
   placeholderText: string
   launcherIcon: string
   autoHide: boolean
@@ -44,6 +58,7 @@ export const DEFAULT_SETTINGS: AppSettings = {
   accent: 'blue',
   opacity: 85,
   searchRadius: 16,
+  animationEffect: 'crossfade',
   placeholderText: '输入内容，快速启动...',
   launcherIcon: 'app',
   autoHide: true,

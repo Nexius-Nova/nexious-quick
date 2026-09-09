@@ -6,7 +6,7 @@
     "frontendDist": "../dist"
   },
   "productName": "Nexious Quick",
-  "version": "0.1.1",
+  "version": "0.1.2",
   "identifier": "com.nexious.quick",
   "app": {
     "windows": [

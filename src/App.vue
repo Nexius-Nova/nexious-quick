@@ -1,6 +1,7 @@
 <script setup lang="ts">
 import { computed, onMounted, ref, watchEffect } from 'vue'
 import { darkTheme, NButton, NConfigProvider, NMessageProvider, zhCN, dateZhCN, type GlobalThemeOverrides } from 'naive-ui'
+import { MotionConfig } from 'motion-v'
 import { getCurrentWindow } from '@tauri-apps/api/window'
 import { isTauri } from './adapter'
 import { initStore, isDark, store } from './store'
@@ -52,14 +53,16 @@ onMounted(initialize)
 </script>
 
 <template>
-  <NConfigProvider :theme="isDark ? darkTheme : null" :theme-overrides="themeOverrides" :locale="zhCN" :date-locale="dateZhCN">
-    <NMessageProvider placement="bottom-right">
-      <Launcher v-if="ready && kind === 'main'" />
-      <Settings v-else-if="ready && kind === 'settings'" />
-      <div v-else class="app-loading" role="status">
-        {{ error || '正在加载...' }}
-        <NButton v-if="error" size="small" @click="initialize">重试</NButton>
-      </div>
-    </NMessageProvider>
-  </NConfigProvider>
+  <MotionConfig reducedMotion="user">
+    <NConfigProvider :theme="isDark ? darkTheme : null" :theme-overrides="themeOverrides" :locale="zhCN" :date-locale="dateZhCN">
+      <NMessageProvider placement="bottom-right">
+        <Launcher v-if="ready && kind === 'main'" />
+        <Settings v-else-if="ready && kind === 'settings'" />
+        <div v-else class="app-loading" role="status">
+          {{ error || '正在加载...' }}
+          <NButton v-if="error" size="small" @click="initialize">重试</NButton>
+        </div>
+      </NMessageProvider>
+    </NConfigProvider>
+  </MotionConfig>
 </template>
