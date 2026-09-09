@@ -457,6 +457,8 @@ button {
   text-align: left;
   width: 100%;
   white-space: nowrap;
+  text-decoration: none;
+  cursor: pointer;
 }
 .sider.collapsed .nav-item {
   justify-content: center;
@@ -714,6 +716,12 @@ button {
   overflow: visible;
   font-size: 12.5px;
   white-space: normal !important;
+}
+.table-loading {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  gap: 8px;
 }
 
 .table-icon {

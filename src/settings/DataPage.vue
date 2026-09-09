@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { computed, h, onMounted, ref, watch, type Component } from 'vue'
+import { computed, h, onActivated, onDeactivated, onMounted, onUnmounted, ref, watch, type Component } from 'vue'
 import { invoke } from '@tauri-apps/api/core'
 import { NButton, NForm, NFormItem, NIcon, NInput, NModal, NSelect, NSpace, NSwitch, useMessage, type SelectRenderLabel } from 'naive-ui'
 import {
@@ -16,8 +16,8 @@ import {
   SearchOutline,
   TrashOutline,
 } from '@vicons/ionicons5'
-import { isTauri } from '../adapter'
-import { findDuplicateItem, isDark, removeItem, store, upsertItem } from '../store'
+import { isTauri, storage } from '../adapter'
+import { findDuplicateAmong, isDark, loadItemsByKind, store } from '../store'
 import { formatLastSync, TYPE_LABEL, type Item, type ItemType } from '../types'
 import ItemIcon from '../components/ItemIcon.vue'
 import FolderTree from './FolderTree.vue'
@@ -48,19 +48,47 @@ const syncButtonText = computed(() => {
   return '同步应用'
 })
 
+// 启动数据页只加载当前标签对应的类型子集（应用 / 网站 / 文件与文件夹），不再整表拉取
+const items = ref<Item[]>([])
+const itemsLoading = ref(false)
+// 路由切走（KeepAlive 缓存）后不再响应刷新，避免后台重复拉取
+const pageActive = ref(true)
+let itemsReloadTimer: ReturnType<typeof window.setTimeout> | undefined
+let itemsOff: (() => void) | null = null
+
+function currentKind(): 'application' | 'website' | 'folder' {
+  return tab.value === 'application' || tab.value === 'website' ? tab.value : 'folder'
+}
+
+async function loadRows() {
+  itemsLoading.value = true
+  try {
+    items.value = await loadItemsByKind(currentKind())
+    visibleCount.value = PAGE_CHUNK
+  } catch (error) {
+    message.error(`加载${sectionTitle.value}失败：${String(error)}`)
+  } finally {
+    itemsLoading.value = false
+  }
+}
+
+function scheduleRowsReload() {
+  if (!pageActive.value) return
+  window.clearTimeout(itemsReloadTimer)
+  itemsReloadTimer = window.setTimeout(() => void loadRows(), 300)
+}
+
+// 其它窗口增删改、本页增删改或窗口重新聚焦后，当前标签页重新拉取自己的子集
+itemsOff = storage.onItemsChanged(() => scheduleRowsReload())
+window.addEventListener('settings:focus', scheduleRowsReload)
+
 const rows = computed(() => {
   const q = keyword.value.trim().toLowerCase()
-  return store.items
-    .filter((i) => {
-      if (tab.value === 'application') return i.type === 'application'
-      if (tab.value === 'website') return i.type === 'website'
-      return i.type === 'folder' || i.type === 'file'
-    })
-    .filter(
-      (i) =>
-        !q ||
-        [i.name, i.alias, i.url, i.description].join(' ').toLowerCase().includes(q),
-    )
+  return items.value.filter(
+    (i) =>
+      !q ||
+      [i.name, i.alias, i.url, i.description].join(' ').toLowerCase().includes(q),
+  )
 })
 
 // 列表可能包含成千上万条（例如同步整个 C/D 盘），只渲染前 N 条避免卡顿
@@ -194,10 +222,24 @@ async function browseNativeFolderRoot() {
 
 watch(tab, (current) => {
   if (current === 'folder' && isTauri) void refreshFolderRoots()
+  void loadRows()
 })
 
 onMounted(() => {
   if (tab.value === 'folder' && isTauri) void refreshFolderRoots()
+  void loadRows()
+})
+onActivated(() => {
+  pageActive.value = true
+  void loadRows()
+})
+onDeactivated(() => {
+  pageActive.value = false
+})
+onUnmounted(() => {
+  window.removeEventListener('settings:focus', scheduleRowsReload)
+  window.clearTimeout(itemsReloadTimer)
+  itemsOff?.()
 })
 
 const colName = computed(() =>
@@ -229,6 +271,8 @@ async function sync() {
       syncResult.value = r
       if (r.total === 0) message.warning(tab.value === 'website' ? '未找到可同步的浏览器收藏夹' : '未找到可同步的数据')
       else message.success(`同步完成：新增 ${r.added} 项，更新 ${r.updated} 项`)
+      // 同步写入较多，稍后重新拉取当前标签页数据
+      scheduleRowsReload()
     } else {
       message.success('浏览器预览模式不支持本地同步')
     }
@@ -237,6 +281,15 @@ async function sync() {
   } finally {
     syncing.value = false
   }
+}
+
+async function persistLocal(item: Item): Promise<Item> {
+  const saved = await storage.saveItem(item)
+  const idx = items.value.findIndex((i) => i.id === saved.id)
+  if (idx >= 0) items.value.splice(idx, 1, saved)
+  else items.value.unshift(saved)
+  await storage.emitItemsChanged()
+  return saved
 }
 
 function startAdd() {
@@ -283,7 +336,7 @@ async function saveItem() {
     enabled: f.enabled !== false,
     updatedAt: '刚刚',
   }
-  const duplicate = findDuplicateItem(item)
+  const duplicate = findDuplicateAmong(items.value, item)
   if (duplicate) {
     const reason =
       item.type === 'website'
@@ -295,14 +348,14 @@ async function saveItem() {
     return
   }
   try {
-    const saved = await upsertItem(item)
+    const saved = await persistLocal(item)
     // 网站项未带图标时，保存后仍在后台自动补全图标，不阻塞保存流程
     if (saved.type === 'website' && !saved.icon && isTauri && validWebsiteUrl(saved.url)) {
       void requestIcon(saved.url).then((icon) => {
         if (!icon) return
-        const fresh = store.items.find((i) => i.id === saved.id)
+        const fresh = items.value.find((i) => i.id === saved.id)
         if (fresh && !fresh.icon) {
-          void upsertItem({ ...fresh, icon, updatedAt: '刚刚' }).catch(() => {})
+          void persistLocal({ ...fresh, icon, updatedAt: '刚刚' }).catch(() => {})
         }
       })
     }
@@ -315,7 +368,9 @@ async function saveItem() {
 
 async function onDelete(item: Item) {
   try {
-    await removeItem(item.id)
+    await storage.deleteItem(item.id)
+    items.value = items.value.filter((i) => i.id !== item.id)
+    await storage.emitItemsChanged()
     message.success(`已删除「${item.name}」`)
   } catch (err) {
     message.error(String(err))
@@ -647,7 +702,13 @@ async function browsePath() {
               </button>
             </td>
           </tr>
-          <tr v-if="!rows.length">
+          <tr v-if="itemsLoading">
+            <td colspan="7" class="empty table-loading">
+              <NIcon :component="RefreshOutline" :size="14" class="spinning" />
+              正在加载数据…
+            </td>
+          </tr>
+          <tr v-else-if="!rows.length">
             <td colspan="7" class="empty">暂无数据，点击右上角「添加」创建，或在「电脑应用」中手动同步。</td>
           </tr>
         </tbody>

@@ -122,6 +122,16 @@ fn row_to_item(row: &rusqlite::Row) -> rusqlite::Result<Item> {
     })
 }
 
+fn items_where_clause(kind: &str) -> &'static str {
+    match kind {
+        "application" => "type='application'",
+        "website" => "type='website'",
+        "file" => "type='file'",
+        "folder" => "type IN ('folder','file')",
+        _ => "1=1",
+    }
+}
+
 fn load_items_sync(app: &AppHandle) -> Result<Vec<Item>, String> {
     with_db(app, |conn| {
         init_schema(conn)?;
@@ -139,10 +149,38 @@ fn load_items_sync(app: &AppHandle) -> Result<Vec<Item>, String> {
     })
 }
 
+fn load_items_by_kind_sync(app: &AppHandle, kind: &str) -> Result<Vec<Item>, String> {
+    with_db(app, |conn| {
+        init_schema(conn)?;
+        let where_sql = items_where_clause(kind);
+        let sql = format!("SELECT * FROM launch_items WHERE {where_sql} ORDER BY id DESC");
+        let mut stmt = conn.prepare(&sql).map_err(|e| e.to_string())?;
+        let rows = stmt
+            .query_map([], row_to_item)
+            .map_err(|e| e.to_string())?;
+        let mut items = Vec::new();
+        for r in rows {
+            items.push(r.map_err(|e| e.to_string())?);
+        }
+        Ok(items)
+    })
+}
+
 #[tauri::command]
 async fn db_load_items(app: AppHandle) -> Result<Vec<Item>, String> {
     // 同步后整表刷新可能包含大量项（尤其整盘目录），放到后台线程执行避免阻塞 UI 主线程
     run_in_background(move || load_items_sync(&app)).await
+}
+
+/// 按类型加载启动项（application / website / folder / file），供设置页按需取数。
+#[tauri::command]
+async fn db_load_items_by_kind(app: AppHandle, kind: String) -> Result<Vec<Item>, String> {
+    let k = if kind.trim().is_empty() {
+        "all".to_string()
+    } else {
+        kind.trim().to_string()
+    };
+    run_in_background(move || load_items_by_kind_sync(&app, &k)).await
 }
 
 fn existing_duplicate_id(conn: &Connection, item: &Item) -> Result<Option<i64>, String> {
@@ -2010,6 +2048,7 @@ fn main() {
         })
         .invoke_handler(tauri::generate_handler![
             db_load_items,
+            db_load_items_by_kind,
             db_save_item,
             db_delete_item,
             db_load_settings,

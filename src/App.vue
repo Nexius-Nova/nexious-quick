@@ -41,7 +41,8 @@ async function initialize() {
   error.value = ''
   kind.value = detectWindow()
   try {
-    await initStore()
+    // 设置窗口无需整表条目（启动数据页按需加载自己的子集），只有启动器全量加载供搜索
+    await initStore({ loadItems: kind.value !== 'settings' })
     ready.value = true
   } catch (cause) {
     error.value = `加载失败：${String(cause)}`

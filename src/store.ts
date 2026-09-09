@@ -123,6 +123,24 @@ export async function reloadItems() {
   store.items = sanitizeItems(await storage.loadItems())
 }
 
+/** 按类型加载启动项子集（application / website / folder），供设置页按需取数，避免整表拉取。 */
+export async function loadItemsByKind(kind: ItemType | 'all' = 'all'): Promise<Item[]> {
+  if (!isTauri) {
+    const all = sanitizeItems(await storage.loadItems())
+    if (kind === 'all') return all
+    return all.filter((i) =>
+      kind === 'folder' ? i.type === 'folder' || i.type === 'file' : i.type === kind,
+    )
+  }
+  return sanitizeItems(await invoke<unknown[]>('db_load_items_by_kind', { kind }))
+}
+
+/** 在给定列表内查找重复项（文件/文件夹按路径+名称，网站按 URL，应用按路径+参数）。 */
+export function findDuplicateAmong(list: Item[], candidate: Item): Item | undefined {
+  const key = itemDedupeKey(candidate)
+  return list.find((item) => item.id !== candidate.id && itemDedupeKey(item) === key)
+}
+
 function sanitizeItems(list: unknown[]): Item[] {
   if (!Array.isArray(list)) return []
   const types: ItemType[] = ['application', 'website', 'folder', 'file']
@@ -199,11 +217,15 @@ export async function removeItem(id: number) {
   await storage.emitItemsChanged()
 }
 
-export async function initStore() {
+export async function initStore(options: { loadItems?: boolean } = {}) {
+  // 设置窗口只加载轻量设置（用于外观主题等）；只有启动器需要整表条目供搜索
+  const withItems = options.loadItems !== false
   await storage.onSettingsChanged(receiveSettings)
   applySettings(await storage.loadSettings())
-  await reloadItems()
-  await seedIfNeeded()
+  if (withItems) {
+    await reloadItems()
+    await seedIfNeeded()
+  }
   store.ready = true
   watch(() => toSettingsMap(store.settings), (current, previous) => {
     if (applyingRemote) return
@@ -213,7 +235,9 @@ export async function initStore() {
     window.clearTimeout(settingsTimer)
     settingsTimer = window.setTimeout(() => void flushSettings(), 50)
   }, { flush: 'sync' })
-  storage.onItemsChanged(() => void reloadItems())
+  if (withItems) {
+    storage.onItemsChanged(() => void reloadItems())
+  }
   window.addEventListener('pagehide', () => void flushSettings())
 }
 

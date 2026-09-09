@@ -16,15 +16,13 @@ import {
   ChevronForwardOutline,
   RemoveOutline,
 } from '@vicons/ionicons5'
+import { useRoute } from 'vue-router'
 import { isTauri } from '../adapter'
-import { flushSettings, isDark, reloadItems, store } from '../store'
+import { flushSettings, isDark, store } from '../store'
 import BrandIcon from '../components/BrandIcon.vue'
-import DataPage from './DataPage.vue'
-import AppearancePage from './AppearancePage.vue'
-import ApplicationPage from './ApplicationPage.vue'
 
 type Page = 'data' | 'appearance' | 'application'
-const page = ref<Page>('data')
+const route = useRoute()
 const maximized = ref(false)
 const fullscreen = ref(false)
 const collapsed = ref(false)
@@ -81,15 +79,7 @@ function toggleSidebar() {
 
 let unFocus: (() => void) | null = null
 let unResize: (() => void) | null = null
-let focusReloadTimer: number | undefined
-
-// 打开窗口/重新聚焦时数据量大，延迟并去抖刷新，避免占用首帧导致卡顿
-function scheduleReloadItems() {
-  window.clearTimeout(focusReloadTimer)
-  focusReloadTimer = window.setTimeout(() => void reloadItems(), 260)
-}
 onUnmounted(() => {
-  window.clearTimeout(focusReloadTimer)
   unFocus?.()
   unResize?.()
 })
@@ -104,7 +94,8 @@ onMounted(() => {
     void win.onResized(() => void refreshWindowState()).then((off) => (unResize = off))
     getCurrentWindow()
       .onFocusChanged(({ payload }) => {
-        if (payload) scheduleReloadItems()
+        // 重新聚焦时通知当前页面按需刷新各自的数据（每个页面各自加载自己的接口）
+        if (payload) window.dispatchEvent(new CustomEvent('settings:focus'))
       })
       .then((off) => (unFocus = off))
       .catch(() => {})
@@ -137,17 +128,17 @@ onMounted(() => {
     <div class="settings-body">
       <aside class="sider" :class="{ collapsed }">
         <nav class="nav">
-          <button
+          <router-link
             v-for="n in navs"
             :key="n.key"
+            :to="{ name: n.key }"
             class="nav-item"
-            :class="{ active: page === n.key }"
-            :aria-current="page === n.key ? 'page' : undefined"
-            @click="page = n.key"
+            :class="{ active: route.name === n.key }"
+            :aria-current="route.name === n.key ? 'page' : undefined"
           >
             <NIcon :component="n.icon as never" :size="17" />
             <span>{{ n.label }}</span>
-          </button>
+          </router-link>
         </nav>
         <div class="sider-foot">
           <div class="sider-footer">v1.0.0</div>
@@ -166,13 +157,13 @@ onMounted(() => {
         <NAlert v-if="store.settingsError" type="error" class="settings-error" :title="store.settingsError">
           <NButton size="small" :loading="store.savingSettings" @click="flushSettings">重试保存</NButton>
         </NAlert>
-        <Transition name="page" mode="out-in">
-          <KeepAlive>
-            <DataPage v-if="page === 'data'" key="data" />
-            <AppearancePage v-else-if="page === 'appearance'" key="appearance" />
-            <ApplicationPage v-else key="application" />
-          </KeepAlive>
-        </Transition>
+        <router-view v-slot="{ Component }">
+          <Transition name="page" mode="out-in">
+            <KeepAlive>
+              <component :is="Component" :key="route.name ?? 'data'" />
+            </KeepAlive>
+          </Transition>
+        </router-view>
       </main>
     </div>
   </div>
