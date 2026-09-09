@@ -144,7 +144,7 @@ onMounted(() => {
           </router-link>
         </nav>
         <div class="sider-foot">
-          <div class="sider-footer">v1.0.0</div>
+          <!-- <div class="sider-footer">v1.0.0</div> -->
         </div>
         <button
           class="sider-trigger"

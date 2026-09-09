@@ -463,23 +463,28 @@ const AUTOSTART_FLAG: &str = "--autostart";
 
 #[cfg(windows)]
 fn autostart_command(enabled: bool) -> Result<bool, String> {
-    use std::process::Command;
     let key = r"HKCU\Software\Microsoft\Windows\CurrentVersion\Run";
     if enabled {
         let exe = std::env::current_exe().map_err(|e| err_msg("获取程序路径失败", e))?;
         let value = format!("\"{}\" {}", exe.display(), AUTOSTART_FLAG);
-        let output = Command::new("reg.exe")
-            .args(["add", key, "/v", AUTOSTART_VALUE, "/t", "REG_SZ", "/d", &value, "/f"])
-            .output()
-            .map_err(|e| err_msg("开启开机自启动失败", e))?;
+        let output = reg_output(&[
+            "add",
+            key,
+            "/v",
+            AUTOSTART_VALUE,
+            "/t",
+            "REG_SZ",
+            "/d",
+            value.as_str(),
+            "/f",
+        ])
+        .map_err(|e| err_msg("开启开机自启动失败", e))?;
         if !output.status.success() {
             return Err(String::from_utf8_lossy(&output.stderr).trim().to_string());
         }
         Ok(true)
     } else {
-        let output = Command::new("reg.exe")
-            .args(["delete", key, "/v", AUTOSTART_VALUE, "/f"])
-            .output()
+        let output = reg_output(&["delete", key, "/v", AUTOSTART_VALUE, "/f"])
             .map_err(|e| err_msg("关闭开机自启动失败", e))?;
         Ok(output.status.success() || output.status.code() == Some(1))
     }
@@ -492,11 +497,13 @@ fn autostart_command(enabled: bool) -> Result<bool, String> {
 
 #[cfg(windows)]
 fn autostart_state() -> Result<bool, String> {
-    use std::process::Command;
-    let output = Command::new("reg.exe")
-        .args(["query", r"HKCU\Software\Microsoft\Windows\CurrentVersion\Run", "/v", AUTOSTART_VALUE])
-        .output()
-        .map_err(|e| err_msg("读取开机自启动状态失败", e))?;
+    let output = reg_output(&[
+        "query",
+        r"HKCU\Software\Microsoft\Windows\CurrentVersion\Run",
+        "/v",
+        AUTOSTART_VALUE,
+    ])
+    .map_err(|e| err_msg("读取开机自启动状态失败", e))?;
     Ok(output.status.success())
 }
 
@@ -507,14 +514,10 @@ fn autostart_state() -> Result<bool, String> { Ok(false) }
 /// 保证升级后的老用户也能以“后台静默启动”方式自启。
 #[cfg(windows)]
 fn ensure_autostart_flag() {
-    use std::process::Command;
     let Ok(exe) = std::env::current_exe() else { return };
     let exe_lower = exe.display().to_string().to_lowercase();
     let key = r"HKCU\Software\Microsoft\Windows\CurrentVersion\Run";
-    let Ok(output) = Command::new("reg.exe")
-        .args(["query", key, "/v", AUTOSTART_VALUE])
-        .output()
-    else {
+    let Ok(output) = reg_output(&["query", key, "/v", AUTOSTART_VALUE]) else {
         return;
     };
     if !output.status.success() {
@@ -762,6 +765,14 @@ fn hide_console(cmd: &mut std::process::Command) {
 
 #[cfg(not(windows))]
 fn hide_console(_cmd: &mut std::process::Command) {}
+
+/// 运行 reg.exe 并隐藏控制台窗口（打包版无控制台时若不隐藏，每次调用都会闪现命令行窗口）。
+fn reg_output(args: &[&str]) -> std::io::Result<std::process::Output> {
+    let mut cmd = std::process::Command::new("reg.exe");
+    cmd.args(args);
+    hide_console(&mut cmd);
+    cmd.output()
+}
 
 // ---------- 应用扫描（开始菜单 + UWP + 图标提取） ----------
 
@@ -1624,16 +1635,13 @@ fn collect_bookmark_branch(
 /// 查询系统默认浏览器（http 协议）对应 Chrome/Edge/Brave，用于收藏去重时优先保留默认浏览器。
 #[cfg(windows)]
 fn http_default_browser_key() -> Option<String> {
-    use std::process::Command;
-    let output = Command::new("reg.exe")
-        .args([
-            "query",
-            r"HKCU\Software\Microsoft\Windows\Shell\Associations\UrlAssociations\http\UserChoice",
-            "/v",
-            "ProgId",
-        ])
-        .output()
-        .ok()?;
+    let output = reg_output(&[
+        "query",
+        r"HKCU\Software\Microsoft\Windows\Shell\Associations\UrlAssociations\http\UserChoice",
+        "/v",
+        "ProgId",
+    ])
+    .ok()?;
     if !output.status.success() {
         return None;
     }
