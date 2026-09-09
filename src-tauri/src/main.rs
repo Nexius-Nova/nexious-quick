@@ -718,20 +718,26 @@ fn launch(app: &AppHandle, item: &Item) -> Result<(), String> {
         "lnk" => spawn_command("explorer.exe", &[url.as_str()], None),
         "exe" => {
             let args: Vec<&str> = item.args.split_whitespace().collect();
-            let mut cmd = std::process::Command::new(&path);
-            cmd.args(&args);
             let workdir = if item.workdir.trim().is_empty() {
                 path.parent().map(|p| p.to_path_buf())
             } else {
                 Some(PathBuf::from(item.workdir.trim()))
             };
-            if let Some(dir) = workdir {
+            let mut cmd = std::process::Command::new(&path);
+            cmd.args(&args);
+            if let Some(dir) = workdir.as_deref() {
                 cmd.current_dir(dir);
             }
             hide_console(&mut cmd);
-            cmd.spawn()
-                .map(|_| ())
-                .map_err(|e| err_msg("启动应用失败", e))
+            match cmd.spawn() {
+                Ok(_) => Ok(()),
+                // 程序清单要求管理员权限（ERROR_ELEVATION_REQUIRED=740）：自动弹 UAC 授权并以管理员身份启动
+                Err(e) if elevated_launch::is_elevation_required(&e) => {
+                    elevated_launch::spawn_elevated(&path, &args, workdir.as_deref())
+                        .map_err(|m| err_msg("启动应用失败", m))
+                }
+                Err(e) => Err(err_msg("启动应用失败", e)),
+            }
         }
         "bat" | "cmd" => {
             let mut cmd = std::process::Command::new("cmd");
@@ -765,6 +771,131 @@ fn hide_console(cmd: &mut std::process::Command) {
 
 #[cfg(not(windows))]
 fn hide_console(_cmd: &mut std::process::Command) {}
+
+// ---------- 管理员权限（UAC）启动 ----------
+
+/// 启动带有“需要管理员权限”清单的程序：普通 CreateProcess 会返回
+/// ERROR_ELEVATION_REQUIRED(740)。此时改用 ShellExecuteW 的 runas 动词，
+/// 让系统弹出 UAC 授权框后以管理员身份启动该程序。
+#[cfg(windows)]
+mod elevated_launch {
+    use std::ffi::OsStr;
+    use std::os::windows::ffi::OsStrExt;
+    use std::path::Path;
+
+    const ERROR_ELEVATION_REQUIRED: i32 = 740;
+
+    #[link(name = "shell32")]
+    extern "system" {
+        fn ShellExecuteW(
+            hwnd: *mut std::ffi::c_void,
+            lp_operation: *const u16,
+            lp_file: *const u16,
+            lp_parameters: *const u16,
+            lp_directory: *const u16,
+            n_show_cmd: i32,
+        ) -> isize;
+    }
+
+    pub fn is_elevation_required(e: &std::io::Error) -> bool {
+        e.raw_os_error() == Some(ERROR_ELEVATION_REQUIRED)
+    }
+
+    fn wide(s: &OsStr) -> Vec<u16> {
+        s.encode_wide().chain(std::iter::once(0)).collect()
+    }
+
+    /// 按 Windows 命令行规则编码单个参数（与 std::process::Command 的编码方式保持一致）。
+    fn append_arg(out: &mut String, arg: &str) {
+        let needs_quotes =
+            arg.is_empty() || arg.chars().any(|c| c == ' ' || c == '\t' || c == '"');
+        if !needs_quotes {
+            out.push_str(arg);
+            return;
+        }
+        out.push('"');
+        let mut backslashes = 0usize;
+        for c in arg.chars() {
+            match c {
+                '\\' => backslashes += 1,
+                '"' => {
+                    for _ in 0..backslashes * 2 {
+                        out.push('\\');
+                    }
+                    backslashes = 0;
+                    out.push('\\');
+                    out.push('"');
+                }
+                _ => {
+                    for _ in 0..backslashes {
+                        out.push('\\');
+                    }
+                    backslashes = 0;
+                    out.push(c);
+                }
+            }
+        }
+        for _ in 0..backslashes * 2 {
+            out.push('\\');
+        }
+        out.push('"');
+    }
+
+    pub fn spawn_elevated(
+        path: &Path,
+        args: &[&str],
+        workdir: Option<&Path>,
+    ) -> Result<(), String> {
+        let file = wide(path.as_os_str());
+        let mut params = String::new();
+        for (i, arg) in args.iter().enumerate() {
+            if i > 0 {
+                params.push(' ');
+            }
+            append_arg(&mut params, arg);
+        }
+        let params = wide(OsStr::new(&params));
+        let operation = wide(OsStr::new("runas"));
+        let dir_w = workdir.map(|d| wide(d.as_os_str()));
+        let dir_ptr = dir_w.as_ref().map_or(std::ptr::null(), |w| w.as_ptr());
+        let result = unsafe {
+            ShellExecuteW(
+                std::ptr::null_mut(),
+                operation.as_ptr(),
+                file.as_ptr(),
+                params.as_ptr(),
+                dir_ptr,
+                1, // SW_SHOWNORMAL
+            )
+        };
+        if result > 32 {
+            return Ok(());
+        }
+        let code = result as u32;
+        if code == 1223 {
+            // ERROR_CANCELLED：用户在 UAC 授权框点了“否”
+            return Err("需要管理员权限，但授权被取消，无法启动".into());
+        }
+        Err(format!("需要管理员权限，提权启动未成功（错误码 {code}）"))
+    }
+}
+
+#[cfg(not(windows))]
+mod elevated_launch {
+    use std::path::Path;
+
+    pub fn is_elevation_required(_e: &std::io::Error) -> bool {
+        false
+    }
+
+    pub fn spawn_elevated(
+        _path: &Path,
+        _args: &[&str],
+        _workdir: Option<&Path>,
+    ) -> Result<(), String> {
+        Err("当前平台不支持自动提权启动".into())
+    }
+}
 
 /// 运行 reg.exe 并隐藏控制台窗口（打包版无控制台时若不隐藏，每次调用都会闪现命令行窗口）。
 fn reg_output(args: &[&str]) -> std::io::Result<std::process::Output> {
