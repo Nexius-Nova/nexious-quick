@@ -25,3 +25,8 @@ Thumbs.db
 .env
 .env.*
 !.env.example
+
+output/
+.playwright-cli/
+需求分析.md
+原型图.png
