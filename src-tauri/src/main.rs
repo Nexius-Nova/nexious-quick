@@ -459,6 +459,7 @@ fn read_bool_setting(app: &AppHandle, key: &str, default: bool) -> bool {
 }
 
 const AUTOSTART_VALUE: &str = "NexiousQuick";
+const AUTOSTART_FLAG: &str = "--autostart";
 
 #[cfg(windows)]
 fn autostart_command(enabled: bool) -> Result<bool, String> {
@@ -466,7 +467,7 @@ fn autostart_command(enabled: bool) -> Result<bool, String> {
     let key = r"HKCU\Software\Microsoft\Windows\CurrentVersion\Run";
     if enabled {
         let exe = std::env::current_exe().map_err(|e| err_msg("获取程序路径失败", e))?;
-        let value = format!("\"{}\"", exe.display());
+        let value = format!("\"{}\" {}", exe.display(), AUTOSTART_FLAG);
         let output = Command::new("reg.exe")
             .args(["add", key, "/v", AUTOSTART_VALUE, "/t", "REG_SZ", "/d", &value, "/f"])
             .output()
@@ -502,24 +503,59 @@ fn autostart_state() -> Result<bool, String> {
 #[cfg(not(windows))]
 fn autostart_state() -> Result<bool, String> { Ok(false) }
 
-#[tauri::command]
-fn get_autostart(app: AppHandle) -> Result<bool, String> {
-    let enabled = autostart_state()?;
-    set_setting_sync(&app, "autoStart", &enabled.to_string())?;
-    let mut patch = HashMap::new();
-    patch.insert("autoStart".to_string(), enabled.to_string());
-    let _ = app.emit(SETTINGS_CHANGED_EVENT, patch);
-    Ok(enabled)
+/// 旧版本注册的开机自启命令行没有 --autostart 标记，检测到后自动补全，
+/// 保证升级后的老用户也能以“后台静默启动”方式自启。
+#[cfg(windows)]
+fn ensure_autostart_flag() {
+    use std::process::Command;
+    let Ok(exe) = std::env::current_exe() else { return };
+    let exe_lower = exe.display().to_string().to_lowercase();
+    let key = r"HKCU\Software\Microsoft\Windows\CurrentVersion\Run";
+    let Ok(output) = Command::new("reg.exe")
+        .args(["query", key, "/v", AUTOSTART_VALUE])
+        .output()
+    else {
+        return;
+    };
+    if !output.status.success() {
+        return;
+    }
+    let text = String::from_utf8_lossy(&output.stdout).to_lowercase();
+    if text.contains(exe_lower.as_str()) && !text.contains(AUTOSTART_FLAG) {
+        let _ = autostart_command(true);
+    }
 }
 
-#[tauri::command]
-fn set_autostart(app: AppHandle, enabled: bool) -> Result<bool, String> {
-    let actual = autostart_command(enabled)?;
-    set_setting_sync(&app, "autoStart", &actual.to_string())?;
+#[cfg(not(windows))]
+fn ensure_autostart_flag() {}
+
+/// 是否由开机自启动（--autostart）拉起，用于决定是否后台静默启动。
+fn is_autostart_launch() -> bool {
+    std::env::args().any(|arg| arg == AUTOSTART_FLAG)
+}
+
+fn apply_autostart_state(app: &AppHandle, enabled: Option<bool>) -> Result<bool, String> {
+    let actual = match enabled {
+        Some(v) => autostart_command(v)?,
+        None => autostart_state()?,
+    };
+    set_setting_sync(app, "autoStart", &actual.to_string())?;
     let mut patch = HashMap::new();
     patch.insert("autoStart".to_string(), actual.to_string());
     let _ = app.emit(SETTINGS_CHANGED_EVENT, patch);
     Ok(actual)
+}
+
+#[tauri::command]
+async fn get_autostart(app: AppHandle) -> Result<bool, String> {
+    // 读注册表会启动外部 reg.exe，放后台线程避免阻塞 IPC
+    run_in_background(move || apply_autostart_state(&app, None)).await
+}
+
+#[tauri::command]
+async fn set_autostart(app: AppHandle, enabled: bool) -> Result<bool, String> {
+    // 写注册表会启动外部 reg.exe，放后台线程避免阻塞 IPC
+    run_in_background(move || apply_autostart_state(&app, Some(enabled))).await
 }
 
 fn now_millis() -> u128 {
@@ -1932,14 +1968,24 @@ fn main() {
             if let Err(err) = apply_shortcut(&handle, &shortcut) {
                 eprintln!("[nexious] {err}");
             }
+            // 开机自启（--autostart）时后台驻留托盘，不弹出启动器，避免开机抢占界面/资源造成卡顿
+            let autostart = is_autostart_launch();
+            if autostart {
+                #[cfg(windows)]
+                ensure_autostart_flag();
+            }
             // 仅在“失去焦点时隐藏”开启时隐藏启动器；默认保持窗口固定显示。
             {
                 let h = handle.clone();
                 let started_at = std::time::Instant::now();
                 if let Some(main) = h.get_webview_window(MAIN_WINDOW) {
-                    let _ = main.show();
-                    let _ = main.center();
-                    let _ = main.set_focus();
+                    if autostart {
+                        let _ = main.hide();
+                    } else {
+                        let _ = main.show();
+                        let _ = main.center();
+                        let _ = main.set_focus();
+                    }
                     main.on_window_event(move |event| {
                         if let tauri::WindowEvent::Focused(false) = event {
                             if started_at.elapsed() < std::time::Duration::from_secs(2) {
@@ -1992,10 +2038,11 @@ fn main() {
             if let Err(err) = setup_tray(app) {
                 eprintln!("[nexious] 托盘初始化失败：{err}");
             }
-            // 启动后台自动同步
+            // 后台自动同步延迟错峰执行，避免开机瞬间与窗口初始化/用户操作争抢资源造成卡顿
             {
                 let h = handle.clone();
                 std::thread::spawn(move || {
+                    std::thread::sleep(std::time::Duration::from_secs(if autostart { 20 } else { 6 }));
                     let auto = with_db(&h, |conn| {
                         Ok(conn
                             .query_row(
@@ -2033,10 +2080,11 @@ fn main() {
                     }
                 });
             }
-            // 启动数据去重：清理历史遗留的重复条目
+            // 启动数据去重：清理历史遗留的重复条目（延迟执行，避开启动高峰）
             {
                 let h = handle.clone();
                 std::thread::spawn(move || {
+                    std::thread::sleep(std::time::Duration::from_secs(if autostart { 15 } else { 4 }));
                     if let Ok(deleted) = dedupe_items(&h) {
                         if deleted > 0 {
                             let _ = h.emit(ITEMS_CHANGED_EVENT, ());

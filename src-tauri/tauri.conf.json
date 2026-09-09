@@ -6,7 +6,7 @@
     "frontendDist": "../dist"
   },
   "productName": "Nexious Quick",
-  "version": "0.1.5",
+  "version": "0.1.6",
   "identifier": "com.nexious.quick",
   "app": {
     "windows": [
@@ -25,7 +25,7 @@
         "maxHeight": 800,
         "width": 480,
         "height": 64,
-        "visible": true,
+        "visible": false,
         "title": "Nexious Quick"
       },
       {
