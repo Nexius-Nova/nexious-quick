@@ -3,7 +3,7 @@ import { computed, nextTick, onMounted, onUnmounted, ref, watch } from 'vue'
 import { invoke } from '@tauri-apps/api/core'
 import { getCurrentWindow } from '@tauri-apps/api/window'
 import { useMessage } from 'naive-ui'
-import { CloseOutline, SearchOutline, SettingsOutline } from '@vicons/ionicons5'
+import { CloseOutline, GlobeOutline, SearchOutline, SettingsOutline } from '@vicons/ionicons5'
 import { NIcon } from 'naive-ui'
 import { motion } from 'motion-v'
 import { isTauri } from './adapter'
@@ -93,6 +93,29 @@ const results = computed(() => searchItems(query.value))
 const searchRowUrl = computed(() =>
   (SEARCH_ENGINES[store.settings.searchEngine] ?? SEARCH_ENGINES.Google) + encodeURIComponent(query.value.trim()),
 )
+
+type DropdownRow =
+  | { kind: 'item'; item: Item }
+  | { kind: 'link'; url: string }
+  | { kind: 'search' }
+
+/** 输入以 http://、https://、www. 开头时视为网址，直接打开而不是丢给搜索引擎 */
+function toDirectUrl(raw: string): string | null {
+  const value = raw.trim()
+  if (/^https?:\/\//i.test(value)) return value
+  if (/^www\./i.test(value)) return `https://${value}`
+  return null
+}
+
+const rows = computed<DropdownRow[]>(() => {
+  const raw = query.value.trim()
+  if (!raw) return []
+  const direct = toDirectUrl(raw)
+  if (direct) return [{ kind: 'link', url: direct }]
+  const list: DropdownRow[] = results.value.map((item) => ({ kind: 'item', item }))
+  list.push({ kind: 'search' })
+  return list
+})
 let unFocus: (() => void) | null = null
 let resizeToken = 0
 let resizeObserver: ResizeObserver | null = null
@@ -117,17 +140,17 @@ function scheduleResize() {
   })
 }
 
-watch([query, results, () => store.settings.showIcons, () => store.settings.searchWidth, () => store.settings.searchHeight], () => {
+watch([query, rows, () => store.settings.showIcons, () => store.settings.searchWidth, () => store.settings.searchHeight], () => {
   selectedIndex.value = 0
   scheduleResize()
 })
 
 function onKeydown(e: KeyboardEvent) {
   if (e.isComposing) return
-  const max = results.value.length
+  const max = rows.value.length - 1
   if (e.key === 'ArrowDown') {
     e.preventDefault()
-    selectedIndex.value = Math.min(selectedIndex.value + 1, max)
+    if (max >= 0) selectedIndex.value = Math.min(selectedIndex.value + 1, max)
   } else if (e.key === 'ArrowUp') {
     e.preventDefault()
     selectedIndex.value = Math.max(selectedIndex.value - 1, 0)
@@ -165,13 +188,18 @@ async function openItem(item: Item) {
 
 async function webSearch() {
   if (!query.value.trim() || launching.value) return
+  await openExternal(searchRowUrl.value)
+}
+
+async function openExternal(url: string) {
+  if (!url || launching.value) return
   if (!isTauri) {
-    window.open(searchRowUrl.value, '_blank', 'noopener,noreferrer')
+    window.open(url, '_blank', 'noopener,noreferrer')
     return
   }
   launching.value = true
   try {
-    await invoke('open_url', { url: searchRowUrl.value })
+    await invoke('open_url', { url })
     query.value = ''
     if (store.settings.autoHide) await invoke('hide_launcher')
   } catch (error) {
@@ -182,7 +210,10 @@ async function webSearch() {
 }
 
 function activate(index: number) {
-  if (index < results.value.length) openItem(results.value[index])
+  const row = rows.value[Math.min(index, rows.value.length - 1)]
+  if (!row) return
+  if (row.kind === 'item') openItem(row.item)
+  else if (row.kind === 'link') void openExternal(row.url)
   else webSearch()
 }
 
@@ -284,52 +315,48 @@ onUnmounted(() => {
       </motion.button>
     </div>
 
-    <div v-if="query.trim()" class="dropdown">
-        <motion.div
-          v-for="(r, idx) in results"
-          :key="r.id"
-          class="result-row"
-          :class="{ active: idx === selectedIndex }"
-          :data-selected="idx === selectedIndex"
-          :initial="animationProfile.initial"
-          :animate="rowAnimate(idx)"
-          :transition="resultTransition(idx)"
-          :whileHover="animationProfile.hover"
-          :whilePress="{ scale: 0.985 }"
-          @click="openItem(r)"
-          @mousedown.stop
-          @mouseenter="selectedIndex = idx"
-        >
-          <ItemIcon :icon="r.icon" :type="r.type" />
+    <div v-if="rows.length" class="dropdown">
+      <motion.div
+        v-for="(row, idx) in rows"
+        :key="row.kind === 'item' ? row.item.id : row.kind"
+        class="result-row"
+        :class="[row.kind === 'search' ? 'search-elsewhere' : '', { active: idx === selectedIndex }]"
+        :data-selected="idx === selectedIndex"
+        :initial="animationProfile.initial"
+        :animate="rowAnimate(idx)"
+        :transition="resultTransition(idx)"
+        :whileHover="animationProfile.hover"
+        :whilePress="{ scale: 0.985 }"
+        @click="activate(idx)"
+        @mousedown.stop
+        @mouseenter="selectedIndex = idx"
+      >
+        <template v-if="row.kind === 'item'">
+          <ItemIcon :icon="row.item.icon" :type="row.item.type" />
           <div class="result-text">
-            <b>{{ r.name }}</b>
-            <span>{{ r.url }}</span>
+            <b>{{ row.item.name }}</b>
+            <span>{{ row.item.url }}</span>
           </div>
-          <span class="result-type">{{ TYPE_LABEL[r.type] }}</span>
-          <span class="result-enter">↵</span>
-        </motion.div>
-
-        <motion.div
-          key="search-elsewhere"
-          class="result-row search-elsewhere"
-          :class="{ active: selectedIndex === results.length }"
-          :initial="animationProfile.initial"
-          :animate="rowAnimate(results.length)"
-          :transition="resultTransition(results.length)"
-          :whileHover="animationProfile.hover"
-          :whilePress="{ scale: 0.985 }"
-          @click="webSearch"
-          @mousedown.stop
-          @mouseenter="selectedIndex = results.length"
-        >
+          <span class="result-type">{{ TYPE_LABEL[row.item.type] }}</span>
+        </template>
+        <template v-else-if="row.kind === 'link'">
+          <div class="result-icon plain">
+            <NIcon :component="GlobeOutline" :size="17" />
+          </div>
+          <div class="result-text single">
+            <b>打开链接 {{ row.url }}</b>
+          </div>
+        </template>
+        <template v-else>
           <div class="result-icon plain">
             <NIcon :component="SearchOutline" :size="17" />
           </div>
           <div class="result-text single">
             <b>未找到？使用{{ store.settings.searchEngine }}搜索引擎搜索 “{{ query.trim() }}”</b>
           </div>
-          <span class="result-enter">↵</span>
-        </motion.div>
+        </template>
+        <span class="result-enter">↵</span>
+      </motion.div>
     </div>
   </div>
 </template>

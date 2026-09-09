@@ -944,6 +944,46 @@ Add-Type -AssemblyName System.Drawing
 $shell = New-Object -ComObject WScript.Shell
 $dirs = @("$env:ProgramData\Microsoft\Windows\Start Menu\Programs", "$env:APPDATA\Microsoft\Windows\Start Menu\Programs")
 $list = @{}
+$pfMap = @{}
+Get-AppxPackage | ForEach-Object { $pfMap[$_.PackageFamilyName.ToLower()] = $_.InstallLocation }
+
+function Get-UwpIcon([string]$loc) {
+    $icon = ''
+    try {
+        $manifest = Join-Path $loc 'AppxManifest.xml'
+        if (-not (Test-Path $manifest)) { return '' }
+        $xml = [xml](Get-Content $manifest -Raw)
+        $rel = ''
+        foreach ($app in @($xml.Package.Applications.Application)) {
+            $ve = $app.VisualElements
+            if (-not $ve) { continue }
+            if (([string]$ve.AppListEntry).Trim() -eq 'none') { continue }
+            $rel = ([string]$ve.Square44x44Logo).Split("`n")[0].Trim()
+            if (-not $rel) { $rel = ([string]$ve.Square150x150Logo).Split("`n")[0].Trim() }
+            if ($rel) { break }
+        }
+        if (-not $rel) { return '' }
+        $full = Join-Path $loc $rel
+        $dir = [IO.Path]::GetDirectoryName($full)
+        $stem = [IO.Path]::GetFileNameWithoutExtension($full)
+        $ext = [IO.Path]::GetExtension($full)
+        $picked = ''
+        foreach ($scale in @('scale-200', 'scale-400')) {
+            $try = Join-Path $dir ($stem + '.' + $scale + $ext)
+            if (Test-Path $try) { $picked = $try; break }
+        }
+        if (-not $picked -and (Test-Path $full)) { $picked = $full }
+        if (-not $picked -and (Test-Path $dir)) {
+            $cand = Get-ChildItem $dir -File -Filter ($stem + '*.png') | Where-Object { $_.Name -match 'scale-200|targetsize-48|applist|storelogo' } | Select-Object -First 1
+            if ($cand) { $picked = $cand.FullName }
+        }
+        if ($picked) {
+            $icon = [Convert]::ToBase64String([IO.File]::ReadAllBytes($picked))
+        }
+    } catch { $icon = '' }
+    return $icon
+}
+
 Get-ChildItem -Path $dirs -Filter *.lnk -Recurse | ForEach-Object {
     $lnk = $shell.CreateShortcut($_.FullName)
     $t = $lnk.TargetPath
@@ -959,7 +999,10 @@ Get-StartApps | ForEach-Object {
     if ($id -and $id.Contains('!') -and $_.Name) {
         $key = 'uwp:' + $_.Name.ToLower()
         if (-not $list.ContainsKey($key)) {
-            $list[$key] = @{ name = $_.Name; target = ('shell:AppsFolder\' + $id); args = ''; dir = '' }
+            $fam = ($id -split '!')[0].ToLower()
+            $pkgLoc = ''
+            if ($pfMap.ContainsKey($fam)) { $pkgLoc = $pfMap[$fam] }
+            $list[$key] = @{ name = $_.Name; target = ('shell:AppsFolder\' + $id); args = ''; dir = ''; pkg = $pkgLoc }
         }
     }
 }
@@ -978,6 +1021,9 @@ foreach ($k in $list.Keys) {
                 $ms.Dispose(); $b.Dispose(); $i.Dispose()
             }
         } catch { $icon = '' }
+    } elseif ($v.pkg) {
+        # Microsoft Store / UWP：从 AppxManifest 指定的应用图标资源提取
+        $icon = Get-UwpIcon $v.pkg
     }
     $result += @{ name = [string]$v.name; target = [string]$v.target; args = [string]$v.args; dir = [string]$v.dir; icon = $icon }
 }

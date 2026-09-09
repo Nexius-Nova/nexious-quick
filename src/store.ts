@@ -326,7 +326,7 @@ function demoApps(): Item[] {
   ]
 }
 
-// ---------- 搜索（需求优先级：精确名称 > 别名 > 路径 > 描述） ----------
+// ---------- 搜索（同等相关度下优先级：应用 > 网站链接 > 文件/文件夹） ----------
 
 export function scoreItem(item: Item, q: string): number {
   const name = item.name.toLowerCase()
@@ -353,6 +353,16 @@ function categoryEnabled(t: ItemType): boolean {
   return true
 }
 
+// 类型加权：同级或相近相关度下按 应用 > 网站 > 文件/文件夹 排列，
+// 权重差（4）小于相关度步长（最低 5），避免“名称弱匹配的应用”压过
+// “名称强匹配的网站/文件夹”，只在接近时让应用优先。
+const TYPE_BONUS: Record<ItemType, number> = {
+  application: 12,
+  website: 8,
+  folder: 4,
+  file: 4,
+}
+
 export function searchItems(q: string, limit = 6): Item[] {
   const query = q.trim().toLowerCase()
   if (!query) return []
@@ -360,7 +370,11 @@ export function searchItems(q: string, limit = 6): Item[] {
     .filter((i) => i.enabled && categoryEnabled(i.type))
     .map((i) => ({ item: i, score: scoreItem(i, query) }))
     .filter((x) => x.score > 0)
-    .sort((a, b) => b.score - a.score || a.item.name.length - b.item.name.length)
+    .sort(
+      (a, b) =>
+        b.score + TYPE_BONUS[b.item.type] - (a.score + TYPE_BONUS[a.item.type]) ||
+        a.item.name.length - b.item.name.length,
+    )
     .slice(0, limit)
     .map((x) => x.item)
 }
