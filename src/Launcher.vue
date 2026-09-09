@@ -3,7 +3,7 @@ import { computed, nextTick, onMounted, onUnmounted, ref, watch } from 'vue'
 import { invoke } from '@tauri-apps/api/core'
 import { getCurrentWindow } from '@tauri-apps/api/window'
 import { useMessage } from 'naive-ui'
-import { CloseOutline, GlobeOutline, SearchOutline, SettingsOutline } from '@vicons/ionicons5'
+import { CloseOutline, FolderOpenOutline, GlobeOutline, SearchOutline, SettingsOutline } from '@vicons/ionicons5'
 import { NIcon } from 'naive-ui'
 import { motion } from 'motion-v'
 import { isTauri } from './adapter'
@@ -89,7 +89,61 @@ function resultTransition(index = 0) {
   }
 }
 
-const results = computed(() => searchItems(query.value))
+// 大量文件/文件夹数据改由后端数据库检索，这里只保留少量命中行，
+// 避免把整表（可达数万条）载入 WebView 造成卡顿。
+const itemHits = ref<Item[]>([])
+const searchPending = ref(false)
+// 结果尚未返回时用户按了 Enter：等结果落地后自动打开首项，避免按键被吞掉
+let pendingActivate = false
+let searchTimer: ReturnType<typeof window.setTimeout> | undefined
+let searchSeq = 0
+
+function scheduleSearch() {
+  window.clearTimeout(searchTimer)
+  const seq = ++searchSeq
+  pendingActivate = false
+  const raw = query.value.trim()
+  if (!raw || toDirectUrl(raw) || toLocalPath(raw)) {
+    itemHits.value = []
+    searchPending.value = false
+    return
+  }
+  if (!isTauri) {
+    itemHits.value = searchItems(query.value)
+    searchPending.value = false
+    return
+  }
+  searchPending.value = true
+  searchTimer = window.setTimeout(() => {
+    invoke<Item[]>('search_items', {
+      q: raw,
+      websiteOn: store.settings.enabledWebsites,
+      folderOn: store.settings.enabledFolders,
+    })
+      .then((list) => {
+        if (seq === searchSeq) {
+          itemHits.value = Array.isArray(list) ? list : []
+          searchPending.value = false
+          settlePendingActivate()
+        }
+      })
+      .catch(() => {
+        if (seq === searchSeq) {
+          itemHits.value = []
+          searchPending.value = false
+          settlePendingActivate()
+        }
+      })
+  }, 60)
+}
+
+function settlePendingActivate() {
+  if (!pendingActivate) return
+  pendingActivate = false
+  if (rows.value.length) void activate(0)
+  else void webSearch()
+}
+
 const searchRowUrl = computed(() =>
   (SEARCH_ENGINES[store.settings.searchEngine] ?? SEARCH_ENGINES.Google) + encodeURIComponent(query.value.trim()),
 )
@@ -97,6 +151,7 @@ const searchRowUrl = computed(() =>
 type DropdownRow =
   | { kind: 'item'; item: Item }
   | { kind: 'link'; url: string }
+  | { kind: 'path'; path: string }
   | { kind: 'search' }
 
 /** 输入以 http://、https://、www. 开头时视为网址，直接打开而不是丢给搜索引擎 */
@@ -107,13 +162,47 @@ function toDirectUrl(raw: string): string | null {
   return null
 }
 
+/** 形如 E:\xxx、E:/xxx、\\server\share 的本地绝对路径（驱动器盘符或 UNC 开头） */
+function toLocalPath(raw: string): string | null {
+  const value = raw.trim().replace(/^"(.*)"$/, '$1').trim()
+  if (/^[A-Za-z]:[\\/]/.test(value)) return value
+  if (/^\\\\[^\\]/.test(value)) return value
+  return null
+}
+
+/** 从路径取末尾名称（去掉结尾分隔符后取最后一段），根目录如 C:\ 则回退为盘符名 */
+function pathDisplayName(path: string): string {
+  const trimmed = path.replace(/[\\/]+$/, '')
+  const last = trimmed.split(/[\\/]/).pop() || ''
+  if (last) return last
+  return trimmed || path
+}
+
+function pathItem(path: string): Item {
+  return {
+    id: 0,
+    icon: '',
+    name: pathDisplayName(path),
+    alias: '',
+    type: 'file',
+    url: path,
+    args: '',
+    workdir: '',
+    description: '',
+    enabled: true,
+    updatedAt: '',
+  }
+}
+
 const rows = computed<DropdownRow[]>(() => {
   const raw = query.value.trim()
   if (!raw) return []
   const direct = toDirectUrl(raw)
   if (direct) return [{ kind: 'link', url: direct }]
-  const list: DropdownRow[] = results.value.map((item) => ({ kind: 'item', item }))
-  list.push({ kind: 'search' })
+  const local = toLocalPath(raw)
+  if (local) return [{ kind: 'path', path: local }]
+  const list: DropdownRow[] = itemHits.value.map((item) => ({ kind: 'item', item }))
+  if (!searchPending.value) list.push({ kind: 'search' })
   return list
 })
 let unFocus: (() => void) | null = null
@@ -144,6 +233,8 @@ watch([query, rows, () => store.settings.showIcons, () => store.settings.searchW
   selectedIndex.value = 0
   scheduleResize()
 })
+watch(query, scheduleSearch, { immediate: true })
+watch([() => store.settings.enabledWebsites, () => store.settings.enabledFolders], scheduleSearch)
 
 function onKeydown(e: KeyboardEvent) {
   if (e.isComposing) return
@@ -156,7 +247,14 @@ function onKeydown(e: KeyboardEvent) {
     selectedIndex.value = Math.max(selectedIndex.value - 1, 0)
   } else if (e.key === 'Enter') {
     e.preventDefault()
-    void activate(selectedIndex.value)
+    if (rows.value.length) {
+      void activate(selectedIndex.value)
+    } else if (query.value.trim()) {
+      // 结果异步返回中：记录意图，等首条命中落地后直接打开；
+      // 无命中（含后端异常）时退化为调用搜索引擎。
+      if (searchPending.value) pendingActivate = true
+      else void webSearch()
+    }
   } else if (e.key === 'Escape') {
     e.preventDefault()
     if (query.value) {
@@ -214,6 +312,7 @@ function activate(index: number) {
   if (!row) return
   if (row.kind === 'item') openItem(row.item)
   else if (row.kind === 'link') void openExternal(row.url)
+  else if (row.kind === 'path') openItem(pathItem(row.path))
   else webSearch()
 }
 
@@ -345,6 +444,14 @@ onUnmounted(() => {
           </div>
           <div class="result-text single">
             <b>打开链接 {{ row.url }}</b>
+          </div>
+        </template>
+        <template v-else-if="row.kind === 'path'">
+          <div class="result-icon plain">
+            <NIcon :component="FolderOpenOutline" :size="17" />
+          </div>
+          <div class="result-text single">
+            <b>打开路径 {{ row.path }}</b>
           </div>
         </template>
         <template v-else>

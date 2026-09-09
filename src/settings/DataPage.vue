@@ -48,27 +48,54 @@ const syncButtonText = computed(() => {
   return '同步应用'
 })
 
-// 启动数据页只加载当前标签对应的类型子集（应用 / 网站 / 文件与文件夹），不再整表拉取
+// 启动数据页通过后端分页检索取数，内存只保留当前页条目，避免整表
+// （尤其整盘同步后可达数万条）一次性回传前端造成卡顿。
 const items = ref<Item[]>([])
+const totalCount = ref(0)
 const itemsLoading = ref(false)
 // 路由切走（KeepAlive 缓存）后不再响应刷新，避免后台重复拉取
 const pageActive = ref(true)
 let itemsReloadTimer: ReturnType<typeof window.setTimeout> | undefined
 let itemsOff: (() => void) | null = null
+// 请求序号：只采纳最后一次发起的取数结果，避免快速输入 / 外部刷新时旧响应覆盖新列表
+let loadSeq = 0
+
+// 列表分页加载，每页最多渲染 PAGE_CHUNK 条
+const PAGE_CHUNK = 120
+const visibleCount = ref(PAGE_CHUNK)
 
 function currentKind(): 'application' | 'website' | 'folder' {
   return tab.value === 'application' || tab.value === 'website' ? tab.value : 'folder'
 }
 
 async function loadRows() {
+  const seq = ++loadSeq
   itemsLoading.value = true
   try {
-    items.value = await loadItemsByKind(currentKind())
-    visibleCount.value = PAGE_CHUNK
+    if (isTauri) {
+      const page = await invoke<{ items: Item[]; total: number }>('db_page_items', {
+        kind: currentKind(),
+        keyword: keyword.value.trim(),
+        offset: 0,
+        limit: visibleCount.value,
+      })
+      if (seq !== loadSeq) return
+      items.value = page.items
+      totalCount.value = page.total
+    } else {
+      const all = await loadItemsByKind(currentKind())
+      const q = keyword.value.trim().toLowerCase()
+      const filtered = q
+        ? all.filter((i) => [i.name, i.alias, i.url, i.description].join(' ').toLowerCase().includes(q))
+        : all
+      if (seq !== loadSeq) return
+      totalCount.value = filtered.length
+      items.value = filtered.slice(0, visibleCount.value)
+    }
   } catch (error) {
-    message.error(`加载${sectionTitle.value}失败：${String(error)}`)
+    if (seq === loadSeq) message.error(`加载${sectionTitle.value}失败：${String(error)}`)
   } finally {
-    itemsLoading.value = false
+    if (seq === loadSeq) itemsLoading.value = false
   }
 }
 
@@ -82,24 +109,36 @@ function scheduleRowsReload() {
 itemsOff = storage.onItemsChanged(() => scheduleRowsReload())
 window.addEventListener('settings:focus', scheduleRowsReload)
 
-const rows = computed(() => {
-  const q = keyword.value.trim().toLowerCase()
-  return items.value.filter(
-    (i) =>
-      !q ||
-      [i.name, i.alias, i.url, i.description].join(' ').toLowerCase().includes(q),
-  )
-})
-
-// 列表可能包含成千上万条（例如同步整个 C/D 盘），只渲染前 N 条避免卡顿
-const PAGE_CHUNK = 120
-const visibleCount = ref(PAGE_CHUNK)
-const visibleRows = computed(() => rows.value.slice(0, visibleCount.value))
-function loadMoreRows() {
-  visibleCount.value += PAGE_CHUNK
+async function loadMoreRows() {
+  if (items.value.length >= totalCount.value) return
+  if (!isTauri) {
+    visibleCount.value += PAGE_CHUNK
+    void loadRows()
+    return
+  }
+  const seq = ++loadSeq
+  itemsLoading.value = true
+  try {
+    const page = await invoke<{ items: Item[]; total: number }>('db_page_items', {
+      kind: currentKind(),
+      keyword: keyword.value.trim(),
+      offset: items.value.length,
+      limit: PAGE_CHUNK,
+    })
+    if (seq !== loadSeq) return
+    const seen = new Set(items.value.map((i) => i.id))
+    items.value = items.value.concat(page.items.filter((i) => !seen.has(i.id)))
+    totalCount.value = page.total
+    visibleCount.value = items.value.length
+  } catch (error) {
+    if (seq === loadSeq) message.error(`加载更多失败：${String(error)}`)
+  } finally {
+    if (seq === loadSeq) itemsLoading.value = false
+  }
 }
-watch([tab, keyword], () => {
+watch(keyword, () => {
   visibleCount.value = PAGE_CHUNK
+  scheduleRowsReload()
 })
 
 const lastSyncText = computed(() => {
@@ -221,6 +260,7 @@ async function browseNativeFolderRoot() {
 }
 
 watch(tab, (current) => {
+  visibleCount.value = PAGE_CHUNK
   if (current === 'folder' && isTauri) void refreshFolderRoots()
   void loadRows()
 })
@@ -625,7 +665,7 @@ async function browsePath() {
         <div class="sync-dirs-head">
           <div class="sync-dirs-info">
             <span class="sync-dirs-title">同步目录</span>
-            <span class="sync-dirs-sub">点「同步本地目录」会把所选目录里的文件/文件夹索引为可搜索的启动项（自动跳过隐藏与系统目录，单个目录最多约 1500 项）。</span>
+            <span class="sync-dirs-sub">点「同步本地目录」会把所选目录里的文件/文件夹索引为可搜索的启动项（自动跳过隐藏与系统目录，按广度覆盖各子目录，单个目录上限约 2 万项）。</span>
           </div>
           <div class="sync-dirs-actions">
             <button v-if="isTauri" class="ghost-btn small" type="button" @click="openFolderManager">
@@ -675,7 +715,7 @@ async function browsePath() {
           </tr>
         </thead>
         <tbody>
-          <tr v-for="r in visibleRows" :key="r.id">
+          <tr v-for="r in items" :key="r.id">
             <td class="col-icon">
               <ItemIcon :icon="r.icon" :type="r.type" />
             </td>
@@ -708,14 +748,14 @@ async function browsePath() {
               正在加载数据…
             </td>
           </tr>
-          <tr v-else-if="!rows.length">
+          <tr v-else-if="!items.length">
             <td colspan="7" class="empty">暂无数据，点击右上角「添加」创建，或在「电脑应用」中手动同步。</td>
           </tr>
         </tbody>
       </table>
-      <div v-if="rows.length > visibleCount" class="data-table-more">
+      <div v-if="totalCount > items.length" class="data-table-more">
         <button class="ghost-btn small" type="button" @click="loadMoreRows">
-          已显示前 {{ visibleCount }} 条，共 {{ rows.length }} 条 · 加载更多
+          已显示前 {{ items.length }} 条，共 {{ totalCount }} 条 · 加载更多
         </button>
       </div>
     </div>

@@ -2,7 +2,7 @@
 
 use rusqlite::Connection;
 use serde::{Deserialize, Serialize};
-use std::collections::HashMap;
+use std::collections::{HashMap, VecDeque};
 use std::path::Path;
 use std::path::PathBuf;
 use tauri::menu::{MenuBuilder, MenuItem};
@@ -146,8 +146,10 @@ fn items_where_clause(kind: &str) -> &'static str {
 fn load_items_sync(app: &AppHandle) -> Result<Vec<Item>, String> {
     with_db(app, |conn| {
         init_schema(conn)?;
+        // 启动器内存只保留少量应用/网站，海量文件与文件夹改为后端检索，
+        // 避免整表（尤其整盘同步后可达数万条）载入 WebView 造成卡顿。
         let mut stmt = conn
-            .prepare("SELECT * FROM launch_items ORDER BY id DESC")
+            .prepare("SELECT * FROM launch_items WHERE type IN ('application','website') ORDER BY id DESC")
             .map_err(|e| e.to_string())?;
         let rows = stmt
             .query_map([], row_to_item)
@@ -192,6 +194,198 @@ async fn db_load_items_by_kind(app: AppHandle, kind: String) -> Result<Vec<Item>
         kind.trim().to_string()
     };
     run_in_background(move || load_items_by_kind_sync(&app, &k)).await
+}
+
+#[derive(Serialize)]
+struct PageResult {
+    items: Vec<Item>,
+    total: i64,
+}
+
+/// 转义 LIKE 通配符，避免用户输入中的 % _ \ 影响检索。
+fn escape_like(input: &str) -> String {
+    input
+        .replace('\\', "\\\\")
+        .replace('%', "\\%")
+        .replace('_', "\\_")
+}
+
+fn alias_list(item: &Item) -> Vec<String> {
+    item.alias
+        .split([',', '，'])
+        .map(|s| s.trim().to_lowercase())
+        .filter(|s| !s.is_empty())
+        .collect()
+}
+
+/// 与前端 scoreItem / TYPE_BONUS 保持一致的排序分，用于后端检索排序。
+fn score_search_item(item: &Item, query: &str) -> i32 {
+    let name = item.name.to_lowercase();
+    if name == query {
+        return 100;
+    }
+    let aliases = alias_list(item);
+    if aliases.iter().any(|a| a == query) {
+        return 90;
+    }
+    if name.starts_with(query) {
+        return 80;
+    }
+    if aliases.iter().any(|a| a.starts_with(query)) {
+        return 75;
+    }
+    if name.contains(query) {
+        return 70;
+    }
+    if aliases.iter().any(|a| a.contains(query)) {
+        return 60;
+    }
+    if item.url.to_lowercase().contains(query) {
+        return 50;
+    }
+    if item.description.to_lowercase().contains(query) {
+        return 40;
+    }
+    0
+}
+
+fn type_search_bonus(kind: &str) -> i32 {
+    match kind {
+        "application" => 12,
+        "website" => 8,
+        _ => 4,
+    }
+}
+
+fn allowed_kinds_clause(website_on: bool, folder_on: bool) -> String {
+    let mut clause = String::from("type='application'");
+    if website_on {
+        clause.push_str(" OR type='website'");
+    }
+    if folder_on {
+        clause.push_str(" OR type IN ('folder','file')");
+    }
+    clause
+}
+
+fn search_items_sync(
+    app: &AppHandle,
+    q: &str,
+    website_on: bool,
+    folder_on: bool,
+    limit: usize,
+) -> Result<Vec<Item>, String> {
+    let query = q.trim().to_lowercase();
+    if query.is_empty() {
+        return Ok(Vec::new());
+    }
+    let pattern = format!("%{}%", escape_like(&query));
+    with_db(app, |conn| {
+        init_schema(conn)?;
+        let allowed = allowed_kinds_clause(website_on, folder_on);
+        let sql = format!(
+            "SELECT * FROM launch_items WHERE enabled=1 AND ({allowed}) AND \
+             (name LIKE ?1 ESCAPE '\\' OR alias LIKE ?1 ESCAPE '\\' \
+              OR url LIKE ?1 ESCAPE '\\' OR description LIKE ?1 ESCAPE '\\')"
+        );
+        let mut stmt = conn.prepare(&sql).map_err(|e| e.to_string())?;
+        let rows = stmt
+            .query_map(rusqlite::params![pattern], row_to_item)
+            .map_err(|e| e.to_string())?;
+        let mut scored: Vec<(i32, usize, Item)> = Vec::new();
+        for row in rows {
+            let item = row.map_err(|e| e.to_string())?;
+            let score = score_search_item(&item, &query) + type_search_bonus(&item.kind);
+            scored.push((score, item.name.len(), item));
+        }
+        scored.sort_by(|a, b| b.0.cmp(&a.0).then_with(|| a.1.cmp(&b.1)));
+        scored.truncate(limit.max(1));
+        Ok(scored.into_iter().map(|(_, _, item)| item).collect())
+    })
+}
+
+fn page_items_sync(
+    app: &AppHandle,
+    kind: &str,
+    keyword: &str,
+    offset: i64,
+    limit: i64,
+) -> Result<PageResult, String> {
+    let where_type = items_where_clause(kind);
+    let kw = keyword.trim();
+    let (filter_sql, like) = if kw.is_empty() {
+        (String::new(), String::new())
+    } else {
+        (
+            " AND (name LIKE ?1 ESCAPE '\\' OR alias LIKE ?1 ESCAPE '\\' \
+              OR url LIKE ?1 ESCAPE '\\' OR description LIKE ?1 ESCAPE '\\')"
+                .to_string(),
+            format!("%{}%", escape_like(&kw.to_lowercase())),
+        )
+    };
+    let count_sql = format!("SELECT COUNT(*) FROM launch_items WHERE {where_type}{filter_sql}");
+    let page_sql = format!(
+        "SELECT * FROM launch_items WHERE {where_type}{filter_sql} \
+         ORDER BY id DESC LIMIT {limit} OFFSET {offset}"
+    );
+    with_db(app, |conn| {
+        init_schema(conn)?;
+        let total = if like.is_empty() {
+            conn.query_row(&count_sql, [], |row| row.get::<_, i64>(0))
+                .map_err(|e| e.to_string())?
+        } else {
+            conn.query_row(&count_sql, rusqlite::params![like], |row| {
+                row.get::<_, i64>(0)
+            })
+            .map_err(|e| e.to_string())?
+        };
+        let items = if like.is_empty() {
+            let mut stmt = conn.prepare(&page_sql).map_err(|e| e.to_string())?;
+            let rows = stmt
+                .query_map([], row_to_item)
+                .map_err(|e| e.to_string())?;
+            rows.collect::<Result<Vec<_>, _>>().map_err(|e| e.to_string())?
+        } else {
+            let mut stmt = conn.prepare(&page_sql).map_err(|e| e.to_string())?;
+            let rows = stmt
+                .query_map(rusqlite::params![like], row_to_item)
+                .map_err(|e| e.to_string())?;
+            rows.collect::<Result<Vec<_>, _>>().map_err(|e| e.to_string())?
+        };
+        Ok(PageResult { items, total })
+    })
+}
+
+/// 启动器搜索：只在数据库里完成过滤与排序，返回少量命中项，避免把整表载入内存。
+#[tauri::command]
+async fn search_items(
+    app: AppHandle,
+    q: String,
+    website_on: bool,
+    folder_on: bool,
+    limit: Option<usize>,
+) -> Result<Vec<Item>, String> {
+    let limit = limit.unwrap_or(6).clamp(1, 20);
+    run_in_background(move || search_items_sync(&app, &q, website_on, folder_on, limit)).await
+}
+
+/// 设置页分页取数：每页只回传少量条目，避免把数万条文件记录一次性发给前端。
+#[tauri::command]
+async fn db_page_items(
+    app: AppHandle,
+    kind: String,
+    keyword: String,
+    offset: i64,
+    limit: i64,
+) -> Result<PageResult, String> {
+    let kind = if kind.trim().is_empty() {
+        "all".to_string()
+    } else {
+        kind.trim().to_string()
+    };
+    let offset = offset.max(0);
+    let limit = limit.clamp(1, 5000);
+    run_in_background(move || page_items_sync(&app, &kind, &keyword, offset, limit)).await
 }
 
 fn existing_duplicate_id(conn: &Connection, item: &Item) -> Result<Option<i64>, String> {
@@ -1236,8 +1430,8 @@ fn merge_synced_items(app: &AppHandle, items: &[SyncedItem]) -> Result<SyncResul
 }
 
 const FOLDER_ROOTS_KEY: &str = "folderRoots";
-const MAX_SYNC_DEPTH: usize = 10;
-const MAX_SYNC_ITEMS_PER_ROOT: usize = 1500;
+const MAX_SYNC_DEPTH: usize = 24;
+const MAX_SYNC_ITEMS_PER_ROOT: usize = 20000;
 
 fn get_setting_value(app: &AppHandle, key: &str) -> Option<String> {
     with_db(app, |conn| {
@@ -1359,8 +1553,11 @@ fn scan_folder_items(root: &FolderRoot, out: &mut Vec<SyncedItem>) {
         return;
     }
     let mut count = 0usize;
-    let mut stack: Vec<(PathBuf, usize)> = vec![(root_path.to_path_buf(), 1)];
-    while let Some((dir, depth)) = stack.pop() {
+    // 广度优先遍历：先覆盖各目录的浅层内容，避免超深子目录（如 .pnpm-store 缓存）
+    // 像之前 DFS 那样独占整棵树的额度，导致其它目录（如下载目录）的文件完全缺失。
+    let mut queue: VecDeque<(PathBuf, usize)> = VecDeque::new();
+    queue.push_back((root_path.to_path_buf(), 1));
+    while let Some((dir, depth)) = queue.pop_front() {
         if depth > MAX_SYNC_DEPTH || count >= MAX_SYNC_ITEMS_PER_ROOT {
             continue;
         }
@@ -1394,10 +1591,10 @@ fn scan_folder_items(root: &FolderRoot, out: &mut Vec<SyncedItem>) {
                 sub_dirs.push((path, file_name));
             }
         }
-        // 字典序稳定遍历：栈是 LIFO，因此逆序入栈
-        sub_dirs.sort_by(|a, b| b.1.to_lowercase().cmp(&a.1.to_lowercase()));
+        // 子目录按名称升序入队，广度优先下各分支被均匀、稳定地覆盖
+        sub_dirs.sort_by(|a, b| a.1.to_lowercase().cmp(&b.1.to_lowercase()));
         for (sub, _) in sub_dirs {
-            stack.push((sub, depth + 1));
+            queue.push_back((sub, depth + 1));
         }
     }
 }
@@ -2326,6 +2523,8 @@ fn main() {
         .invoke_handler(tauri::generate_handler![
             db_load_items,
             db_load_items_by_kind,
+            db_page_items,
+            search_items,
             db_save_item,
             db_delete_item,
             db_load_settings,

@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { computed, ref } from 'vue'
+import { computed, onMounted, onUnmounted, ref } from 'vue'
 import { NIcon, NInput, NSlider, NSwitch, useMessage } from 'naive-ui'
 import { motion } from 'motion-v'
 import {
@@ -41,11 +41,32 @@ function setAnimationEffect(effect: LauncherAnimation) {
 const customIcon = computed(() => store.settings.launcherIcon.startsWith('data:'))
 const iconFileEl = ref<HTMLInputElement | null>(null)
 
-// 预览区把主窗口按“宽度 260px 上限”等比缩放成迷你预览，尺寸与圆角比例和主窗口保持一致
+// 预览可用宽度：跟随设置窗口大小自适应，两侧各留 12px 边距
+const previewFitWidth = ref(300)
+const previewWallEl = ref<HTMLElement | null>(null)
+let previewResizeObserver: ResizeObserver | null = null
+function measurePreviewWall() {
+  const el = previewWallEl.value
+  if (!el) return
+  // 内层宽度需减去左右内边距与边框，保证等比后的整窗不被裁切
+  previewFitWidth.value = Math.max(220, Math.round(el.clientWidth - 26))
+}
+onMounted(() => {
+  measurePreviewWall()
+  if (typeof ResizeObserver !== 'undefined' && previewWallEl.value) {
+    previewResizeObserver = new ResizeObserver(measurePreviewWall)
+    previewResizeObserver.observe(previewWallEl.value)
+  }
+})
+onUnmounted(() => {
+  previewResizeObserver?.disconnect()
+  previewResizeObserver = null
+})
+// 等比缩放：整窗在预览墙内尽量放大显示（不引入额外的 1:1 模式）
 const previewScale = computed(() => {
   const width = store.settings.searchWidth
   if (!width) return 1
-  return Math.min(1, 260 / width)
+  return Math.min(1, previewFitWidth.value / width)
 })
 const previewStageStyle = computed(() => ({
   width: `${Math.round(store.settings.searchWidth * previewScale.value)}px`,
@@ -314,7 +335,7 @@ function onPlaceholderBlur() {
       </div>
 
       <div class="appearance-preview">
-        <div class="preview-wall">
+        <div ref="previewWallEl" class="preview-wall">
           <div class="preview-stage" :style="previewStageStyle">
             <div
               class="launcher preview-render"

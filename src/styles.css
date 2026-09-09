@@ -954,7 +954,7 @@ button {
 }
 
 .appearance-preview {
-  width: 320px;
+  width: clamp(340px, 46%, 560px);
   flex-shrink: 0;
 }
 .preview-wall {
@@ -963,11 +963,12 @@ button {
   overflow: hidden;
   display: grid;
   place-items: center;
+  padding: 12px;
   border: 1px solid var(--hairline);
   background: #a9c6e2;
 }
 
-/* 预览区迷你启动器：内层按真实像素绘制，再整体等比缩放，圆角/尺寸与主窗口比例一致 */
+/* 预览区启动器：内层按真实像素绘制，再整体等比缩放，圆角/尺寸与主窗口比例一致 */
 .preview-stage {
   position: relative;
 }
