@@ -211,8 +211,16 @@ let resizeObserver: ResizeObserver | null = null
 
 function startDrag(event: MouseEvent) {
   if (event.button !== 0 || !isTauri) return
+  // preventDefault 阻止图标按钮抢走输入框焦点，同时避免拖动后触发文字选择
   event.preventDefault()
+  // 拖动期间窗口会短暂失去焦点：通知后端暂缓“失去焦点自动隐藏”
+  invoke('set_launcher_drag', { active: true }).catch(() => {})
   void getCurrentWindow().startDragging().catch((error) => message.error(`拖动窗口失败：${String(error)}`))
+}
+
+function endDrag() {
+  if (!isTauri) return
+  invoke('set_launcher_drag', { active: false }).catch(() => {})
 }
 
 function scheduleResize() {
@@ -337,6 +345,7 @@ function onPanelEnter() {
 onMounted(() => {
   inputEl.value?.focus()
   scheduleResize()
+  window.addEventListener('mouseup', endDrag)
   if (isTauri && typeof ResizeObserver !== 'undefined') {
     resizeObserver = new ResizeObserver(() => scheduleResize())
     if (launcherEl.value) resizeObserver.observe(launcherEl.value)
@@ -354,6 +363,7 @@ onMounted(() => {
   }
 })
 onUnmounted(() => {
+  window.removeEventListener('mouseup', endDrag)
   resizeObserver?.disconnect()
   unFocus?.()
 })
@@ -375,7 +385,15 @@ onUnmounted(() => {
     @mousedown="startDrag"
   >
     <div class="search-row">
-      <button v-if="store.settings.showIcons" class="launcher-drag brand-chip" aria-label="拖动搜索窗口" title="拖动搜索窗口">
+      <button
+        v-if="store.settings.showIcons"
+        type="button"
+        tabindex="-1"
+        class="launcher-drag brand-chip"
+        aria-label="拖动搜索窗口"
+        title="拖动搜索窗口"
+        @mousedown.stop="startDrag"
+      >
         <BrandIcon :size="18" />
       </button>
       <input

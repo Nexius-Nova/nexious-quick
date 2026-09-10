@@ -353,14 +353,13 @@ function categoryEnabled(t: ItemType): boolean {
   return true
 }
 
-// 类型加权：同级或相近相关度下按 应用 > 网站 > 文件/文件夹 排列，
-// 权重差（4）小于相关度步长（最低 5），避免“名称弱匹配的应用”压过
-// “名称强匹配的网站/文件夹”，只在接近时让应用优先。
-const TYPE_BONUS: Record<ItemType, number> = {
-  application: 12,
-  website: 8,
-  folder: 4,
-  file: 4,
+// 搜索匹配优先级：应用 > 网站链接 > 文件/文件夹，同类型内再按相关度排序
+// （与后端 search_items 的排序规则保持一致）
+const TYPE_RANK: Record<ItemType, number> = {
+  application: 0,
+  website: 1,
+  folder: 2,
+  file: 2,
 }
 
 export function searchItems(q: string, limit = 6): Item[] {
@@ -372,7 +371,8 @@ export function searchItems(q: string, limit = 6): Item[] {
     .filter((x) => x.score > 0)
     .sort(
       (a, b) =>
-        b.score + TYPE_BONUS[b.item.type] - (a.score + TYPE_BONUS[a.item.type]) ||
+        TYPE_RANK[a.item.type] - TYPE_RANK[b.item.type] ||
+        b.score - a.score ||
         a.item.name.length - b.item.name.length,
     )
     .slice(0, limit)

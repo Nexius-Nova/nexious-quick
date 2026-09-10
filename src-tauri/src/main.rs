@@ -5,6 +5,7 @@ use serde::{Deserialize, Serialize};
 use std::collections::{HashMap, VecDeque};
 use std::path::Path;
 use std::path::PathBuf;
+use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use tauri::menu::{MenuBuilder, MenuItem};
 use tauri::tray::{MouseButton, MouseButtonState, TrayIconBuilder, TrayIconEvent};
 use tauri::{AppHandle, Emitter, LogicalSize, Manager};
@@ -218,7 +219,7 @@ fn alias_list(item: &Item) -> Vec<String> {
         .collect()
 }
 
-/// 与前端 scoreItem / TYPE_BONUS 保持一致的排序分，用于后端检索排序。
+/// 与前端 scoreItem 保持一致的排序分，用于后端检索排序。
 fn score_search_item(item: &Item, query: &str) -> i32 {
     let name = item.name.to_lowercase();
     if name == query {
@@ -249,11 +250,12 @@ fn score_search_item(item: &Item, query: &str) -> i32 {
     0
 }
 
-fn type_search_bonus(kind: &str) -> i32 {
+/// 搜索匹配优先级：应用 > 网站链接 > 文件/文件夹（同类型内再按相关度排序）
+fn type_priority(kind: &str) -> i32 {
     match kind {
-        "application" => 12,
-        "website" => 8,
-        _ => 4,
+        "application" => 0,
+        "website" => 1,
+        _ => 2,
     }
 }
 
@@ -292,15 +294,20 @@ fn search_items_sync(
         let rows = stmt
             .query_map(rusqlite::params![pattern], row_to_item)
             .map_err(|e| e.to_string())?;
-        let mut scored: Vec<(i32, usize, Item)> = Vec::new();
+        let mut scored: Vec<(i32, i32, usize, Item)> = Vec::new();
         for row in rows {
             let item = row.map_err(|e| e.to_string())?;
-            let score = score_search_item(&item, &query) + type_search_bonus(&item.kind);
-            scored.push((score, item.name.len(), item));
+            let priority = type_priority(&item.kind);
+            let score = score_search_item(&item, &query);
+            scored.push((priority, score, item.name.len(), item));
         }
-        scored.sort_by(|a, b| b.0.cmp(&a.0).then_with(|| a.1.cmp(&b.1)));
+        scored.sort_by(|a, b| {
+            a.0.cmp(&b.0)
+                .then_with(|| b.1.cmp(&a.1))
+                .then_with(|| a.2.cmp(&b.2))
+        });
         scored.truncate(limit.max(1));
-        Ok(scored.into_iter().map(|(_, _, item)| item).collect())
+        Ok(scored.into_iter().map(|(_, _, _, item)| item).collect())
     })
 }
 
@@ -886,6 +893,212 @@ fn open_item(app: AppHandle, item: Item, keyword: String) -> Result<(), String> 
     res
 }
 
+// ---------- 已运行应用的窗口激活（Windows） ----------
+
+/// 启动应用前先检查是否已在运行：已运行则激活其已有窗口，避免重复打开。
+#[cfg(windows)]
+mod running_app {
+    use std::path::Path;
+
+    type Handle = *mut core::ffi::c_void;
+
+    const TH32CS_SNAPPROCESS: u32 = 0x0000_0002;
+    const PROCESS_QUERY_LIMITED_INFORMATION: u32 = 0x1000;
+    const MAX_PATH: usize = 260;
+    const GW_OWNER: u32 = 4;
+    const SW_RESTORE: i32 = 9;
+
+    #[repr(C)]
+    struct ProcessEntry32W {
+        dw_size: u32,
+        cnt_usage: u32,
+        th32_process_id: u32,
+        th32_default_heap_id: usize,
+        th32_module_id: u32,
+        cnt_threads: u32,
+        th32_parent_process_id: u32,
+        pc_pri_class_base: i32,
+        dw_flags: u32,
+        sz_exe_file: [u16; MAX_PATH],
+    }
+
+    #[link(name = "kernel32")]
+    extern "system" {
+        fn CreateToolhelp32Snapshot(flags: u32, process_id: u32) -> Handle;
+        fn Process32FirstW(snapshot: Handle, entry: *mut ProcessEntry32W) -> i32;
+        fn Process32NextW(snapshot: Handle, entry: *mut ProcessEntry32W) -> i32;
+        fn CloseHandle(handle: Handle) -> i32;
+        fn OpenProcess(access: u32, inherit: i32, process_id: u32) -> Handle;
+        fn QueryFullProcessImageNameW(
+            process: Handle,
+            flags: u32,
+            exe_name: *mut u16,
+            size: *mut u32,
+        ) -> i32;
+        fn GetCurrentThreadId() -> u32;
+    }
+
+    #[link(name = "user32")]
+    extern "system" {
+        fn EnumWindows(callback: extern "system" fn(Handle, isize) -> i32, param: isize) -> i32;
+        fn IsWindowVisible(hwnd: Handle) -> i32;
+        fn GetWindow(hwnd: Handle, cmd: u32) -> Handle;
+        fn GetWindowThreadProcessId(hwnd: Handle, process_id: *mut u32) -> u32;
+        fn ShowWindow(hwnd: Handle, cmd: i32) -> i32;
+        fn SetForegroundWindow(hwnd: Handle) -> i32;
+        fn BringWindowToTop(hwnd: Handle) -> i32;
+        fn AttachThreadInput(attach: u32, attach_to: u32, enable: i32) -> i32;
+        fn GetForegroundWindow() -> Handle;
+    }
+
+    /// 读取进程对应的可执行文件完整路径（无权限时返回 None）
+    fn process_image_path(process_id: u32) -> Option<String> {
+        let handle = unsafe { OpenProcess(PROCESS_QUERY_LIMITED_INFORMATION, 0, process_id) };
+        if handle.is_null() {
+            return None;
+        }
+        let mut buffer = vec![0u16; 1024];
+        let mut size = buffer.len() as u32;
+        let ok = unsafe { QueryFullProcessImageNameW(handle, 0, buffer.as_mut_ptr(), &mut size) };
+        unsafe { CloseHandle(handle) };
+        if ok == 0 || size == 0 {
+            return None;
+        }
+        Some(String::from_utf16_lossy(&buffer[..size as usize]))
+    }
+
+    /// Windows 的 canonicalize 会带 `\\?\` 前缀，需要还原成普通路径再比较
+    fn normalize_path(path: &Path) -> String {
+        let text = path.to_string_lossy().replace(r"\\?\UNC\", r"\\");
+        let trimmed: Option<String> = text.strip_prefix(r"\\?\").map(|rest| rest.to_string());
+        trimmed.unwrap_or(text).to_lowercase()
+    }
+
+    /// 按可执行文件完整路径查找正在运行的进程
+    fn find_process(target: &Path) -> Option<u32> {
+        let canonical = std::fs::canonicalize(target).unwrap_or_else(|_| target.to_path_buf());
+        let expected = normalize_path(&canonical);
+        let target_name = canonical
+            .file_name()
+            .map(|n| n.to_string_lossy().to_lowercase())
+            .unwrap_or_default();
+        if target_name.is_empty() {
+            return None;
+        }
+        let snapshot = unsafe { CreateToolhelp32Snapshot(TH32CS_SNAPPROCESS, 0) };
+        if snapshot as isize == -1 || snapshot.is_null() {
+            return None;
+        }
+        let mut entry: ProcessEntry32W = unsafe { std::mem::zeroed() };
+        entry.dw_size = std::mem::size_of::<ProcessEntry32W>() as u32;
+        let mut found = None;
+        let mut ok = unsafe { Process32FirstW(snapshot, &mut entry) };
+        while ok != 0 {
+            let process_id = entry.th32_process_id;
+            let name_end = entry
+                .sz_exe_file
+                .iter()
+                .position(|c| *c == 0)
+                .unwrap_or(MAX_PATH);
+            let name = String::from_utf16_lossy(&entry.sz_exe_file[..name_end]).to_lowercase();
+            // 先按进程名粗筛，命中后再核对完整路径，避免同名的其它目录程序误判
+            if name == target_name {
+                if let Some(image) = process_image_path(process_id) {
+                    if image.to_lowercase() == expected {
+                        found = Some(process_id);
+                        break;
+                    }
+                }
+            }
+            ok = unsafe { Process32NextW(snapshot, &mut entry) };
+        }
+        unsafe { CloseHandle(snapshot) };
+        found
+    }
+
+    struct WindowSearch {
+        process_id: u32,
+        hwnd: Handle,
+        owner_free_only: bool,
+    }
+
+    extern "system" fn pick_window(hwnd: Handle, param: isize) -> i32 {
+        let out = unsafe { &mut *(param as *mut WindowSearch) };
+        if unsafe { IsWindowVisible(hwnd) } == 0 {
+            return 1;
+        }
+        // 优先选择无宿主的应用主窗口，跳过托盘/工具窗口
+        if out.owner_free_only && (unsafe { GetWindow(hwnd, GW_OWNER) }) as isize != 0 {
+            return 1;
+        }
+        let mut process_id = 0u32;
+        unsafe { GetWindowThreadProcessId(hwnd, &mut process_id) };
+        if process_id != out.process_id {
+            return 1;
+        }
+        out.hwnd = hwnd;
+        0
+    }
+
+    /// 把已运行进程的主窗口还原并置于前台
+    fn activate(process_id: u32) -> bool {
+        let mut search = WindowSearch {
+            process_id,
+            hwnd: std::ptr::null_mut(),
+            owner_free_only: true,
+        };
+        unsafe { EnumWindows(pick_window, &mut search as *mut WindowSearch as isize) };
+        // 个别程序主窗口带宿主，找不到无宿主窗口时放宽条件再找一次
+        if search.hwnd.is_null() {
+            search.owner_free_only = false;
+            unsafe { EnumWindows(pick_window, &mut search as *mut WindowSearch as isize) };
+        }
+        if search.hwnd.is_null() {
+            return false;
+        }
+        unsafe {
+            ShowWindow(search.hwnd, SW_RESTORE);
+            let current = GetCurrentThreadId();
+            let foreground = GetForegroundWindow();
+            let foreground_thread = if foreground.is_null() {
+                0
+            } else {
+                GetWindowThreadProcessId(foreground, std::ptr::null_mut())
+            };
+            // SetForegroundWindow 受前台锁定限制，附加到前台线程后再调用可稳定生效
+            if foreground_thread != 0 && foreground_thread != current {
+                AttachThreadInput(current, foreground_thread, 1);
+            }
+            BringWindowToTop(search.hwnd);
+            // 前台锁定等原因可能让 SetForegroundWindow 返回 0，此时窗口也已还原到桌面，
+            // 只要找到主窗口就视为已激活，避免再启动一个重复实例。
+            SetForegroundWindow(search.hwnd);
+            if foreground_thread != 0 && foreground_thread != current {
+                AttachThreadInput(current, foreground_thread, 0);
+            }
+            true
+        }
+    }
+
+    /// 目标程序已在运行时激活其窗口并返回 true（调用方据此跳过重复启动）
+    pub fn activate_if_running(path: &Path) -> bool {
+        match find_process(path) {
+            // 找到进程但定位不到窗口（如纯托盘程序）时返回 false，交由调用方正常启动
+            Some(process_id) => activate(process_id),
+            None => false,
+        }
+    }
+}
+
+#[cfg(not(windows))]
+mod running_app {
+    use std::path::Path;
+
+    pub fn activate_if_running(_path: &Path) -> bool {
+        false
+    }
+}
+
 fn launch(app: &AppHandle, item: &Item) -> Result<(), String> {
     let url = item.url.trim().to_string();
     if url.is_empty() {
@@ -923,6 +1136,10 @@ fn launch(app: &AppHandle, item: &Item) -> Result<(), String> {
         "lnk" => spawn_command("explorer.exe", &[url.as_str()], None),
         "exe" => {
             let args: Vec<&str> = item.args.split_whitespace().collect();
+            // 未附加启动参数时：目标程序已在运行则直接激活其窗口，不再启动第二个实例
+            if args.is_empty() && running_app::activate_if_running(&path) {
+                return Ok(());
+            }
             let workdir = if item.workdir.trim().is_empty() {
                 path.parent().map(|p| p.to_path_buf())
             } else {
@@ -2183,6 +2400,31 @@ fn focus_launcher(app: AppHandle) -> Result<(), String> {
     Ok(())
 }
 
+// 拖动启动器窗口时窗口会短暂失去焦点，需要暂缓“失去焦点自动隐藏”，否则一拖就消失。
+static LAUNCHER_DRAGGING: AtomicBool = AtomicBool::new(false);
+static LAUNCHER_DRAG_UNTIL: AtomicU64 = AtomicU64::new(0);
+
+/// 前端在开始/结束拖动时调用，拖动期间忽略失焦隐藏。
+/// 附带 5 秒兜底过期，避免异常情况下永久不再自动隐藏。
+#[tauri::command]
+fn set_launcher_drag(active: bool) {
+    LAUNCHER_DRAGGING.store(active, Ordering::SeqCst);
+    if active {
+        LAUNCHER_DRAG_UNTIL.store((now_millis() + 5000) as u64, Ordering::SeqCst);
+    }
+}
+
+fn launcher_dragging() -> bool {
+    if !LAUNCHER_DRAGGING.load(Ordering::SeqCst) {
+        return false;
+    }
+    if (now_millis() as u64) > LAUNCHER_DRAG_UNTIL.load(Ordering::SeqCst) {
+        LAUNCHER_DRAGGING.store(false, Ordering::SeqCst);
+        return false;
+    }
+    true
+}
+
 #[tauri::command]
 fn resize_launcher(app: AppHandle, width: f64, height: f64) -> Result<(), String> {
     if let Some(w) = app.get_webview_window(MAIN_WINDOW) {
@@ -2417,6 +2659,10 @@ fn main() {
                             if started_at.elapsed() < std::time::Duration::from_secs(2) {
                                 return;
                             }
+                            // 拖动窗口过程中忽略失焦隐藏，避免拖动被中断
+                            if launcher_dragging() {
+                                return;
+                            }
                             let should_hide = with_db(&h, |conn| {
                                 Ok(conn
                                     .query_row(
@@ -2552,6 +2798,7 @@ fn main() {
             set_close_to_tray,
             hide_launcher,
             focus_launcher,
+            set_launcher_drag,
             resize_launcher,
             quit_app,
             set_shortcut,
