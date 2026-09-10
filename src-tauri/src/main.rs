@@ -1118,6 +1118,12 @@ fn launch(app: &AppHandle, item: &Item) -> Result<(), String> {
         }
         return Err("无效的应用标识".into());
     }
+    // 特殊启动方式：shell 命名空间（::{CLSID}）与自定义协议（如 steam://），交给系统默认方式打开
+    if url.starts_with("::{")
+        || (url.contains("://") && !url.starts_with("http://") && !url.starts_with("https://"))
+    {
+        return shell_open::open(&url).map_err(|e| err_msg("启动失败", e));
+    }
     let path = PathBuf::from(&url);
     if path.is_dir() {
         return app
@@ -1135,7 +1141,7 @@ fn launch(app: &AppHandle, item: &Item) -> Result<(), String> {
     match ext.as_str() {
         "lnk" => spawn_command("explorer.exe", &[url.as_str()], None),
         "exe" => {
-            let args: Vec<&str> = item.args.split_whitespace().collect();
+            let args = split_args(&item.args);
             // 未附加启动参数时：目标程序已在运行则直接激活其窗口，不再启动第二个实例
             if args.is_empty() && running_app::activate_if_running(&path) {
                 return Ok(());
@@ -1150,12 +1156,16 @@ fn launch(app: &AppHandle, item: &Item) -> Result<(), String> {
             if let Some(dir) = workdir.as_deref() {
                 cmd.current_dir(dir);
             }
-            hide_console(&mut cmd);
+            // 控制台程序（cmd.exe / powershell.exe 等）必须保留控制台窗口，否则用户点了看不到任何界面
+            if !is_console_app(&path) {
+                hide_console(&mut cmd);
+            }
             match cmd.spawn() {
                 Ok(_) => Ok(()),
                 // 程序清单要求管理员权限（ERROR_ELEVATION_REQUIRED=740）：自动弹 UAC 授权并以管理员身份启动
                 Err(e) if elevated_launch::is_elevation_required(&e) => {
-                    elevated_launch::spawn_elevated(&path, &args, workdir.as_deref())
+                    let arg_refs: Vec<&str> = args.iter().map(|s| s.as_str()).collect();
+                    elevated_launch::spawn_elevated(&path, &arg_refs, workdir.as_deref())
                         .map_err(|m| err_msg("启动应用失败", m))
                 }
                 Err(e) => Err(err_msg("启动应用失败", e)),
@@ -1194,11 +1204,160 @@ fn hide_console(cmd: &mut std::process::Command) {
 #[cfg(not(windows))]
 fn hide_console(_cmd: &mut std::process::Command) {}
 
+/// 判断可执行文件是否为控制台程序（PE 可选头 Subsystem = IMAGE_SUBSYSTEM_WINDOWS_CUI）。
+/// 控制台程序不能带 CREATE_NO_WINDOW 启动，否则窗口不可见、看起来像“点了没反应”。
+#[cfg(windows)]
+fn is_console_app(path: &std::path::Path) -> bool {
+    use std::io::{Read, Seek, SeekFrom};
+
+    const IMAGE_SUBSYSTEM_WINDOWS_CUI: u16 = 3;
+
+    fn read_at(file: &mut std::fs::File, offset: u64, len: usize) -> Option<Vec<u8>> {
+        file.seek(SeekFrom::Start(offset)).ok()?;
+        let mut buf = vec![0u8; len];
+        file.read_exact(&mut buf).ok()?;
+        Some(buf)
+    }
+
+    let Ok(mut file) = std::fs::File::open(path) else {
+        return false;
+    };
+    let Some(head) = read_at(&mut file, 0, 0x40) else {
+        return false;
+    };
+    if head[0..2] != *b"MZ" {
+        return false;
+    }
+    let pe_offset = u32::from_le_bytes([head[0x3c], head[0x3d], head[0x3e], head[0x3f]]) as u64;
+    let Some(signature) = read_at(&mut file, pe_offset, 4) else {
+        return false;
+    };
+    if signature != *b"PE\0\0" {
+        return false;
+    }
+    // PE 签名(4) + COFF 文件头(20) 之后是可选头，Subsystem 位于可选头偏移 68（PE32 与 PE32+ 一致）
+    let Some(subsystem) = read_at(&mut file, pe_offset + 24 + 68, 2) else {
+        return false;
+    };
+    u16::from_le_bytes([subsystem[0], subsystem[1]]) == IMAGE_SUBSYSTEM_WINDOWS_CUI
+}
+
+#[cfg(not(windows))]
+fn is_console_app(_path: &std::path::Path) -> bool {
+    false
+}
+
+/// 解析启动项参数：Windows 下按系统规则切分，保留引号内的空格，
+/// 避免 `cmd /k "C:\xx\xx.bat"`、PowerShell `-c "..."` 这类参数被按空格拆坏。
+#[cfg(windows)]
+fn split_args(raw: &str) -> Vec<String> {
+    use std::ffi::{OsStr, OsString};
+    use std::os::windows::ffi::{OsStrExt, OsStringExt};
+
+    type Handle = *mut core::ffi::c_void;
+
+    #[link(name = "shell32")]
+    extern "system" {
+        fn CommandLineToArgvW(cmd_line: *const u16, num_args: *mut i32) -> *mut *mut u16;
+    }
+    #[link(name = "kernel32")]
+    extern "system" {
+        fn LocalFree(ptr: Handle) -> Handle;
+    }
+
+    if raw.trim().is_empty() {
+        return Vec::new();
+    }
+    // CommandLineToArgvW 会把第一个 token 当作程序名，这里补一个占位名再丢弃
+    let line: Vec<u16> = OsStr::new(&format!("x {raw}"))
+        .encode_wide()
+        .chain(std::iter::once(0))
+        .collect();
+    let mut count = 0i32;
+    let argv = unsafe { CommandLineToArgvW(line.as_ptr(), &mut count) };
+    if argv.is_null() || count <= 1 {
+        return raw.split_whitespace().map(|s| s.to_string()).collect();
+    }
+    let mut out = Vec::new();
+    unsafe {
+        for i in 1..count as isize {
+            let ptr = *argv.offset(i);
+            if ptr.is_null() {
+                continue;
+            }
+            let mut len = 0usize;
+            while *ptr.add(len) != 0 {
+                len += 1;
+            }
+            let arg = OsString::from_wide(std::slice::from_raw_parts(ptr, len));
+            out.push(arg.to_string_lossy().to_string());
+        }
+        LocalFree(argv as Handle);
+    }
+    out
+}
+
+#[cfg(not(windows))]
+fn split_args(raw: &str) -> Vec<String> {
+    raw.split_whitespace().map(|s| s.to_string()).collect()
+}
+
 // ---------- 管理员权限（UAC）启动 ----------
 
 /// 启动带有“需要管理员权限”清单的程序：普通 CreateProcess 会返回
 /// ERROR_ELEVATION_REQUIRED(740)。此时改用 ShellExecuteW 的 runas 动词，
 /// 让系统弹出 UAC 授权框后以管理员身份启动该程序。
+/// 用系统默认方式打开非文件目标：shell 命名空间（`::{CLSID}`）与自定义协议（如 `steam://`）。
+#[cfg(windows)]
+mod shell_open {
+    use std::ffi::OsStr;
+    use std::os::windows::ffi::OsStrExt;
+
+    #[link(name = "shell32")]
+    extern "system" {
+        fn ShellExecuteW(
+            hwnd: *mut std::ffi::c_void,
+            lp_operation: *const u16,
+            lp_file: *const u16,
+            lp_parameters: *const u16,
+            lp_directory: *const u16,
+            n_show_cmd: i32,
+        ) -> isize;
+    }
+
+    pub fn open(target: &str) -> Result<(), String> {
+        let file: Vec<u16> = OsStr::new(target)
+            .encode_wide()
+            .chain(std::iter::once(0))
+            .collect();
+        let operation: Vec<u16> = OsStr::new("open")
+            .encode_wide()
+            .chain(std::iter::once(0))
+            .collect();
+        let result = unsafe {
+            ShellExecuteW(
+                std::ptr::null_mut(),
+                operation.as_ptr(),
+                file.as_ptr(),
+                std::ptr::null(),
+                std::ptr::null(),
+                1, // SW_SHOWNORMAL
+            )
+        };
+        if result > 32 {
+            return Ok(());
+        }
+        Err(format!("系统无法打开该目标（错误码 {}）", result as u32))
+    }
+}
+
+#[cfg(not(windows))]
+mod shell_open {
+    pub fn open(_target: &str) -> Result<(), String> {
+        Err("当前平台不支持该启动方式".into())
+    }
+}
+
 #[cfg(windows)]
 mod elevated_launch {
     use std::ffi::OsStr;
@@ -1353,8 +1512,10 @@ $ErrorActionPreference = 'SilentlyContinue'
 [Console]::OutputEncoding = [System.Text.Encoding]::UTF8
 Add-Type -AssemblyName System.Drawing
 $shell = New-Object -ComObject WScript.Shell
-$dirs = @("$env:ProgramData\Microsoft\Windows\Start Menu\Programs", "$env:APPDATA\Microsoft\Windows\Start Menu\Programs")
 $list = @{}
+$byTarget = @{}
+$byName = @{}
+$byLeaf = @{}
 $pfMap = @{}
 Get-AppxPackage | ForEach-Object { $pfMap[$_.PackageFamilyName.ToLower()] = $_.InstallLocation }
 
@@ -1395,51 +1556,142 @@ function Get-UwpIcon([string]$loc) {
     return $icon
 }
 
-Get-ChildItem -Path $dirs -Filter *.lnk -Recurse | ForEach-Object {
-    $lnk = $shell.CreateShortcut($_.FullName)
-    $t = $lnk.TargetPath
-    if ($t -and (Test-Path $t)) {
-        $key = $t.ToLower()
-        if (-not $list.ContainsKey($key)) {
-            $list[$key] = @{ name = [IO.Path]::GetFileNameWithoutExtension($_.BaseName); target = $t; args = $lnk.Arguments; dir = $lnk.WorkingDirectory }
+function Get-FileIcon([string]$file) {
+    $icon = ''
+    try {
+        $i = [System.Drawing.Icon]::ExtractAssociatedIcon($file)
+        if ($i) {
+            $b = $i.ToBitmap()
+            $ms = New-Object System.IO.MemoryStream
+            $b.Save($ms, [System.Drawing.Imaging.ImageFormat]::Png)
+            $icon = [Convert]::ToBase64String($ms.ToArray())
+            $ms.Dispose(); $b.Dispose(); $i.Dispose()
         }
+    } catch { $icon = '' }
+    return $icon
+}
+
+function Add-App([string]$name, [string]$target, [string]$argList, [string]$workDir, [string]$pkg) {
+    $name = ([string]$name).Trim()
+    $target = ([string]$target).Trim()
+    $argList = ([string]$argList).Trim()
+    if (-not $name -or -not $target) { return }
+    $key = ($target + '|' + $argList).ToLower()
+    if ($list.ContainsKey($key)) {
+        if ($pkg -and -not $list[$key]['pkg']) { $list[$key]['pkg'] = $pkg }
+        return
+    }
+    $list[$key] = @{ name = $name; target = $target; args = $argList; dir = ([string]$workDir).Trim(); pkg = [string]$pkg }
+    $byTarget[$target.ToLower()] = $true
+    $byName[$name.ToLower()] = $true
+    if ($target -match '^[A-Za-z]:\\') { $byLeaf[([IO.Path]::GetFileName($target) + '|' + $argList).ToLower()] = $true }
+}
+
+function Add-AppOnce([string]$name, [string]$target, [string]$argList, [string]$workDir, [string]$pkg) {
+    $name = ([string]$name).Trim()
+    $target = ([string]$target).Trim()
+    $argList = ([string]$argList).Trim()
+    if (-not $name -or -not $target) { return }
+    if ($byTarget.ContainsKey($target.ToLower()) -or $byName.ContainsKey($name.ToLower())) { return }
+    if ($target -match '^[A-Za-z]:\\' -and $byLeaf.ContainsKey(([IO.Path]::GetFileName($target) + '|' + $argList).ToLower())) { return }
+    Add-App $name $target $argList $workDir $pkg
+}
+
+function Read-Lnk([string]$file) {
+    $lnk = $shell.CreateShortcut($file)
+    $t = [string]$lnk.TargetPath
+    $a = ([string]$lnk.Arguments).Trim()
+    if (-not $t) { return $null }
+    if ($a -match '^shell:AppsFolder\\' -and [IO.Path]::GetFileName($t).ToLower() -eq 'explorer.exe') {
+        $t = $a
+        $a = ''
+    } elseif ($t -notmatch '^shell:AppsFolder\\' -and -not (Test-Path $t)) {
+        return $null
+    }
+    return @{ name = [IO.Path]::GetFileNameWithoutExtension($file); target = $t; args = $a; dir = [string]$lnk.WorkingDirectory }
+}
+
+foreach ($dir in @("$env:ProgramData\Microsoft\Windows\Start Menu\Programs", "$env:APPDATA\Microsoft\Windows\Start Menu\Programs")) {
+    Get-ChildItem -Path $dir -Filter *.lnk -Recurse | ForEach-Object {
+        $i = Read-Lnk $_.FullName
+        if ($i) { Add-App $i['name'] $i['target'] $i['args'] $i['dir'] '' }
     }
 }
+
+foreach ($dir in @("$env:USERPROFILE\Desktop", "$env:PUBLIC\Desktop")) {
+    Get-ChildItem -Path $dir -Filter *.lnk -Recurse | ForEach-Object {
+        $i = Read-Lnk $_.FullName
+        if ($i) { Add-AppOnce $i['name'] $i['target'] $i['args'] $i['dir'] '' }
+    }
+}
+
+$shellTargets = @{
+    '::{52205FD8-5DFB-447D-801A-D0B52F2E83E1}' = "$env:windir\explorer.exe"
+    '::{5399E694-6CE5-4D6C-8FCE-1D8870FDCBA0}' = "$env:windir\System32\control.exe"
+    '::{2559A1F3-21D7-11D4-BDAF-00C04F60B9F0}' = "$env:windir\System32\shell32.dll"
+}
+$appsFolder = (New-Object -ComObject Shell.Application).NameSpace('shell:AppsFolder')
+foreach ($it in $appsFolder.Items()) {
+    $name = ([string]$it.Name).Trim()
+    if (-not $name) { continue }
+    $tp = ([string]$it.ExtendedProperty('System.Link.TargetParsingPath')).Trim()
+    $pa = ([string]$it.ExtendedProperty('System.Link.Arguments')).Trim()
+    $path = ([string]$it.Path).Trim()
+    $target = ''
+    if ($tp -match '^[A-Za-z]:\\' -or $tp -match '^::' -or $tp -match '^[a-z][a-z0-9+.-]*://') {
+        $target = $tp
+    } elseif ($path -match '^[A-Za-z]:\\' -or $path -match '^::' -or $path -match '^[a-z][a-z0-9+.-]*://') {
+        $target = $path
+        $pa = ''
+    } elseif ($path) {
+        $target = 'shell:AppsFolder\' + $path
+        $pa = ''
+    }
+    if (-not $target) { continue }
+    if ($target -match '^https?://') { continue }
+    $key = ($target + '|' + $pa).ToLower()
+    if ($list.ContainsKey($key)) { $list[$key]['name'] = $name; continue }
+    Add-AppOnce $name $target $pa '' ''
+}
+
+$skipPath = '\\Windows\\|\\WindowsApps\\|\\SystemApps\\|\\Common Files\\|\\Microsoft Office\\|\\Microsoft Shared\\|\\Windows Mail\\|\\Internet Explorer\\IEDIAG'
+foreach ($root in @('HKLM:\SOFTWARE\Microsoft\Windows\CurrentVersion\App Paths', 'HKLM:\SOFTWARE\WOW6432Node\Microsoft\Windows\CurrentVersion\App Paths', 'HKCU:\SOFTWARE\Microsoft\Windows\CurrentVersion\App Paths')) {
+    if (-not (Test-Path $root)) { continue }
+    Get-ChildItem $root | ForEach-Object {
+        $exe = ([string](Get-ItemProperty $_.PSPath).'(default)').Trim().Trim('"')
+        if (-not $exe -or $exe -notmatch '^[A-Za-z]:\\' -or -not (Test-Path $exe)) { return }
+        if ($exe -match $skipPath) { return }
+        $desc = ''
+        try { $desc = ([string](Get-Item $exe).VersionInfo.FileDescription).Trim() } catch { $desc = '' }
+        if (-not $desc) { $desc = [IO.Path]::GetFileNameWithoutExtension($exe) }
+        Add-AppOnce $desc $exe '' ([IO.Path]::GetDirectoryName($exe)) ''
+    }
+}
+
 Get-StartApps | ForEach-Object {
     $id = $_.AppID
     if ($id -and $id.Contains('!') -and $_.Name) {
-        $key = 'uwp:' + $_.Name.ToLower()
-        if (-not $list.ContainsKey($key)) {
-            $fam = ($id -split '!')[0].ToLower()
-            $pkgLoc = ''
-            if ($pfMap.ContainsKey($fam)) { $pkgLoc = $pfMap[$fam] }
-            $list[$key] = @{ name = $_.Name; target = ('shell:AppsFolder\' + $id); args = ''; dir = ''; pkg = $pkgLoc }
-        }
+        $fam = ($id -split '!')[0].ToLower()
+        $pkgLoc = ''
+        if ($pfMap.ContainsKey($fam)) { $pkgLoc = $pfMap[$fam] }
+        Add-App $_.Name ('shell:AppsFolder\' + $id) '' '' $pkgLoc
     }
 }
+
 $result = @()
 foreach ($k in $list.Keys) {
     $v = $list[$k]
     $icon = ''
-    if ($v.target -match '^[A-Za-z]:\\' -and $v.target.ToLower().EndsWith('.exe')) {
-        try {
-            $i = [System.Drawing.Icon]::ExtractAssociatedIcon($v.target)
-            if ($i) {
-                $b = $i.ToBitmap()
-                $ms = New-Object System.IO.MemoryStream
-                $b.Save($ms, [System.Drawing.Imaging.ImageFormat]::Png)
-                $icon = [Convert]::ToBase64String($ms.ToArray())
-                $ms.Dispose(); $b.Dispose(); $i.Dispose()
-            }
-        } catch { $icon = '' }
-    } elseif ($v.pkg) {
-        # Microsoft Store / UWP：从 AppxManifest 指定的应用图标资源提取
-        $icon = Get-UwpIcon $v.pkg
+    if ($v['target'] -match '^[A-Za-z]:\\') {
+        $icon = Get-FileIcon $v['target']
+    } elseif ($shellTargets.ContainsKey($v['target'])) {
+        $icon = Get-FileIcon $shellTargets[$v['target']]
+    } elseif ($v['pkg']) {
+        $icon = Get-UwpIcon $v['pkg']
     }
-    $result += @{ name = [string]$v.name; target = [string]$v.target; args = [string]$v.args; dir = [string]$v.dir; icon = $icon }
+    $result += @{ name = [string]$v['name']; target = [string]$v['target']; args = [string]$v['args']; dir = [string]$v['dir']; icon = $icon }
 }
-@{ apps = $result } | ConvertTo-Json -Compress -Depth 4
-"#;
+@{ apps = $result } | ConvertTo-Json -Compress -Depth 4"#;
 
 fn scan_apps() -> Result<Vec<ScannedApp>, String> {
     let mut cmd = std::process::Command::new("powershell");
@@ -1494,13 +1746,22 @@ fn merge_scanned(app: &AppHandle) -> Result<SyncResult, String> {
         let mut known = HashMap::<String, i64>::new();
         {
             let mut stmt = tx
-                .prepare("SELECT id, url FROM launch_items WHERE type='application'")
+                .prepare("SELECT id, url, args FROM launch_items WHERE type='application'")
                 .map_err(|e| e.to_string())?;
             let rows = stmt
-                .query_map([], |row| Ok((row.get::<_, i64>(0)?, row.get::<_, String>(1)?)))
+                .query_map([], |row| {
+                    Ok((
+                        row.get::<_, i64>(0)?,
+                        row.get::<_, String>(1)?,
+                        row.get::<_, String>(2)?,
+                    ))
+                })
                 .map_err(|e| e.to_string())?;
             for row in rows.flatten() {
-                known.entry(row.1.to_lowercase()).or_insert(row.0);
+                // 与扫描端一致：同一个 exe 的不同启动参数是不同应用，需分别保留
+                known
+                    .entry(format!("{}|{}", row.1.to_lowercase(), row.2.trim().to_lowercase()))
+                    .or_insert(row.0);
             }
         }
         for a in &apps {
@@ -1509,7 +1770,7 @@ fn merge_scanned(app: &AppHandle) -> Result<SyncResult, String> {
             } else {
                 format!("data:image/png;base64,{}", a.icon)
             };
-            let key = a.target.to_lowercase();
+            let key = format!("{}|{}", a.target.to_lowercase(), a.args.trim().to_lowercase());
             if let Some(&id) = known.get(&key) {
                 // 字段没有变化时跳过写入，减少无谓的 DB 写入
                 tx.execute(
