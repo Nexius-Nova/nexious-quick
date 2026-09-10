@@ -2,6 +2,28 @@
 
 Nexious Quick 是一款 Windows 桌面快速启动工具。按下全局快捷键，输入关键词即可快速启动电脑应用、网站链接、文件与文件夹，并支持对已安装应用、浏览器收藏夹和本地目录进行自动同步与检索。
 
+## 应用截图
+
+### 快速启动
+
+![Nexious Quick 快速启动界面](docs/images/launcher1.png)
+
+![Nexious Quick 快速启动界面](docs/images/launcher2.png)
+
+### 启动数据
+![Nexious Quick 启动数据界面](docs/images/data1.png)
+![Nexious Quick 快速启动界面](docs/images/data2.png)
+![Nexious Quick 快速启动界面](docs/images/data3.png)
+
+
+### 外观设置
+
+![Nexious Quick 外观设置界面](docs/images/appearance-settings.png)
+
+
+### 应用设置
+![Nexious Quick 应用设置界面](docs/images/settings.png)
+
 ## 功能特性
 
 - **全局唤起**：自定义快捷键随时显示 / 隐藏搜索窗口，启动器可置顶显示
