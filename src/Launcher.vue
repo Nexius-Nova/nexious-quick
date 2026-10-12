@@ -5,7 +5,6 @@ import { getCurrentWindow } from '@tauri-apps/api/window'
 import { useMessage } from 'naive-ui'
 import { CloseOutline, FolderOpenOutline, GlobeOutline, SearchOutline, SettingsOutline } from '@vicons/ionicons5'
 import { NIcon } from 'naive-ui'
-import { motion } from 'motion-v'
 import { isTauri } from './adapter'
 import { isDark, reloadItems, searchItems, store } from './store'
 import { SEARCH_ENGINES, TYPE_LABEL, type Item } from './types'
@@ -18,76 +17,6 @@ const selectedIndex = ref(0)
 const inputEl = ref<HTMLInputElement | null>(null)
 const launcherEl = ref<HTMLElement | null>(null)
 const launching = ref(false)
-
-const resultEase = [0.22, 1, 0.36, 1] as const
-
-const animationProfile = computed(() => {
-  switch (store.settings.animationEffect) {
-    case 'reveal':
-      // 从搜索框方向向下“展开”
-      return {
-        initial: { opacity: 0, y: -14, scaleY: 0.7 },
-        animate: { opacity: 1, y: 0, scaleY: 1 },
-        hover: { y: -1 },
-      }
-    case 'float':
-      // 卡片从下方淡入、上浮到原位
-      return {
-        initial: { opacity: 0, y: 18, scale: 0.92 },
-        animate: { opacity: 1, y: 0, scale: 1 },
-        hover: { y: -2, x: 2 },
-      }
-    case 'spring':
-      // 入场带弹簧回弹浮现
-      return {
-        initial: { opacity: 0, y: 14, scale: 0.95 },
-        animate: { opacity: 1, y: 0, scale: 1 },
-        hover: { y: -2 },
-      }
-    case 'spotlight':
-      // 横向滑入，配合下方 rowAnimate 让选中项横移，形成“光标跟随”效果
-      return {
-        initial: { opacity: 0, x: -18 },
-        animate: { opacity: 1, x: 0 },
-        hover: {},
-      }
-    case 'crossfade':
-    default:
-      return {
-        initial: { opacity: 0 },
-        animate: { opacity: 1 },
-        hover: {},
-      }
-  }
-})
-
-// spotlight：当前选中行额外向右滑出，聚焦反馈跟随光标/方向键移动
-function rowAnimate(index: number) {
-  const target = { ...animationProfile.value.animate }
-  if (store.settings.animationEffect === 'spotlight' && index === selectedIndex.value) {
-    target.x = 8
-  }
-  return target
-}
-
-function resultTransition(index = 0) {
-  if (store.settings.animationEffect === 'spring') {
-    return {
-      type: 'spring' as const,
-      stiffness: 380,
-      damping: 30,
-      mass: 0.6,
-      delay: Math.min(index, 5) * 0.035,
-    }
-  }
-  // 逐行错峰：延迟随行号递增，形成逐行出现/淡入的效果
-  const stagger = store.settings.animationEffect === 'reveal' ? 0.04 : 0.05
-  return {
-    duration: store.settings.animationEffect === 'crossfade' ? 0.2 : 0.3,
-    delay: Math.min(index, 5) * stagger,
-    ease: resultEase,
-  }
-}
 
 // 大量文件/文件夹数据改由后端数据库检索，这里只保留少量命中行，
 // 避免把整表（可达数万条）载入 WebView 造成卡顿。
@@ -243,6 +172,7 @@ watch([query, rows, () => store.settings.showIcons, () => store.settings.searchW
 })
 watch(query, scheduleSearch, { immediate: true })
 watch(() => store.items, scheduleSearch)
+watch(() => store.itemsRevision, scheduleSearch)
 watch([() => store.settings.enabledWebsites, () => store.settings.enabledFolders], scheduleSearch)
 
 function onKeydown(e: KeyboardEvent) {
@@ -374,8 +304,7 @@ onUnmounted(() => {
   <div
     ref="launcherEl"
     class="launcher"
-    :data-accent="store.settings.accent"
-    :data-effect="store.settings.animationEffect"
+    :data-ui-style="store.settings.accent"
     :class="{ dark: isDark }"
     :style="{
       '--panel-alpha': String(store.settings.opacity / 100),
@@ -409,42 +338,33 @@ onUnmounted(() => {
         @mousedown.stop
         @keydown="onKeydown"
       />
-      <motion.button
+      <button
         v-if="query"
         class="icon-btn"
         aria-label="清除"
-        :whileHover="{ scale: 1.08 }"
-        :whilePress="{ scale: 0.9 }"
         @mousedown.stop
         @click="clearQuery"
       >
         <NIcon :component="CloseOutline" :size="16" />
-      </motion.button>
-      <motion.button
+      </button>
+      <button
         class="icon-btn"
         aria-label="设置"
         title="设置"
-        :whileHover="{ scale: 1.08, rotate: 8 }"
-        :whilePress="{ scale: 0.9, rotate: -4 }"
         @mousedown.stop
         @click="openSettings"
       >
         <NIcon :component="SettingsOutline" :size="17" />
-      </motion.button>
+      </button>
     </div>
 
     <div v-if="rows.length" class="dropdown">
-      <motion.div
+      <div
         v-for="(row, idx) in rows"
         :key="row.kind === 'item' ? row.item.id : row.kind"
         class="result-row"
         :class="[row.kind === 'search' ? 'search-elsewhere' : '', { active: idx === selectedIndex }]"
         :data-selected="idx === selectedIndex"
-        :initial="animationProfile.initial"
-        :animate="rowAnimate(idx)"
-        :transition="resultTransition(idx)"
-        :whileHover="animationProfile.hover"
-        :whilePress="{ scale: 0.985 }"
         @click="activate(idx)"
         @mousedown.stop
         @mouseenter="selectedIndex = idx"
@@ -482,7 +402,7 @@ onUnmounted(() => {
           </div>
         </template>
         <span class="result-enter">↵</span>
-      </motion.div>
+      </div>
     </div>
   </div>
 </template>

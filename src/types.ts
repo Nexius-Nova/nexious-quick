@@ -1,19 +1,5 @@
 export type ItemType = 'application' | 'website' | 'folder' | 'file'
 export type ThemeMode = 'system' | 'light' | 'dark'
-export type LauncherAnimation = 'reveal' | 'float' | 'spring' | 'crossfade' | 'spotlight'
-
-export const LAUNCHER_ANIMATION_OPTIONS: Array<{
-  key: LauncherAnimation
-  label: string
-  description: string
-}> = [
-  { key: 'reveal', label: '垂直展开', description: '结果从搜索框方向向下逐项展开' },
-  { key: 'float', label: '卡片浮出', description: '卡片从下方淡入上浮' },
-  { key: 'spring', label: '弹性浮现', description: '结果项依次带弹簧回弹浮现' },
-  { key: 'crossfade', label: '平稳淡化', description: '平稳淡入，输入过程最平稳' },
-  { key: 'spotlight', label: '聚焦滑动', description: '选中项横向滑出聚焦，像光标一样跟随移动' },
-]
-
 export interface Item {
   id: number
   icon: string
@@ -35,7 +21,6 @@ export interface AppSettings {
   searchRadius: number
   searchWidth: number
   searchHeight: number
-  animationEffect: LauncherAnimation
   placeholderText: string
   launcherIcon: string
   autoHide: boolean
@@ -62,7 +47,6 @@ export const DEFAULT_SETTINGS: AppSettings = {
   searchRadius: 16,
   searchWidth: 480,
   searchHeight: 40,
-  animationEffect: 'crossfade',
   placeholderText: '输入内容，快速启动...',
   launcherIcon: 'app',
   autoHide: true,
@@ -80,118 +64,6 @@ export const DEFAULT_SETTINGS: AppSettings = {
   shortcut: 'Alt+Space',
   searchEngine: 'Google',
   lastSync: '',
-}
-
-export interface AccentTheme {
-  key: string
-  label: string
-  color: string
-  rgb: string
-  primary: string
-  primaryStrong: string
-  lightHover: string
-  lightPressed: string
-  darkPrimary: string
-  darkHover: string
-  darkPressed: string
-}
-
-export const ACCENT_THEMES: AccentTheme[] = [
-  {
-    key: 'blue',
-    label: '经典蓝',
-    color: '#2f6bfe',
-    rgb: '47, 107, 254',
-    primary: '#2f6bfe',
-    primaryStrong: '#245fd8',
-    lightHover: '#477cff',
-    lightPressed: '#245fd8',
-    darkPrimary: '#729bff',
-    darkHover: '#96b4ff',
-    darkPressed: '#5b88f5',
-  },
-  {
-    key: 'violet',
-    label: '典雅紫',
-    color: '#7c3aed',
-    rgb: '124, 58, 237',
-    primary: '#7c3aed',
-    primaryStrong: '#6d28d9',
-    lightHover: '#8b5cf6',
-    lightPressed: '#6d28d9',
-    darkPrimary: '#a78bfa',
-    darkHover: '#c4b5fd',
-    darkPressed: '#8b5cf6',
-  },
-  {
-    key: 'cyan',
-    label: '湖水青',
-    color: '#0891b2',
-    rgb: '8, 145, 178',
-    primary: '#0891b2',
-    primaryStrong: '#0e7490',
-    lightHover: '#06b6d4',
-    lightPressed: '#0e7490',
-    darkPrimary: '#22d3ee',
-    darkHover: '#67e8f9',
-    darkPressed: '#06b6d4',
-  },
-  {
-    key: 'emerald',
-    label: '翡翠绿',
-    color: '#059669',
-    rgb: '5, 150, 105',
-    primary: '#059669',
-    primaryStrong: '#047857',
-    lightHover: '#10b981',
-    lightPressed: '#047857',
-    darkPrimary: '#34d399',
-    darkHover: '#6ee7b7',
-    darkPressed: '#10b981',
-  },
-  {
-    key: 'orange',
-    label: '落日橙',
-    color: '#ea580c',
-    rgb: '234, 88, 12',
-    primary: '#ea580c',
-    primaryStrong: '#c2410c',
-    lightHover: '#f97316',
-    lightPressed: '#c2410c',
-    darkPrimary: '#fb923c',
-    darkHover: '#fdba74',
-    darkPressed: '#f97316',
-  },
-  {
-    key: 'rose',
-    label: '樱粉',
-    color: '#e11d48',
-    rgb: '225, 29, 72',
-    primary: '#e11d48',
-    primaryStrong: '#be123c',
-    lightHover: '#f43f5e',
-    lightPressed: '#be123c',
-    darkPrimary: '#fb7185',
-    darkHover: '#fda4af',
-    darkPressed: '#f43f5e',
-  },
-  {
-    key: 'slate',
-    label: '石墨灰',
-    color: '#475569',
-    rgb: '71, 85, 105',
-    primary: '#475569',
-    primaryStrong: '#334155',
-    lightHover: '#64748b',
-    lightPressed: '#334155',
-    darkPrimary: '#94a3b8',
-    darkHover: '#cbd5e1',
-    darkPressed: '#64748b',
-  },
-]
-
-export function accentTheme(key: string): AccentTheme {
-  return ACCENT_THEMES.find((item) => item.key === key) ?? ACCENT_THEMES[0]
 }
 
 export const SEARCH_ENGINES: Record<string, string> = {

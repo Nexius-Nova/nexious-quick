@@ -1,7 +1,6 @@
 <script setup lang="ts">
 import { computed, onMounted, onUnmounted, ref } from 'vue'
 import { NIcon, NInput, NSlider, NSwitch, useMessage } from 'naive-ui'
-import { motion } from 'motion-v'
 import {
   DesktopOutline,
   ImageOutline,
@@ -11,12 +10,10 @@ import {
 } from '@vicons/ionicons5'
 import { isDark, store } from '../store'
 import {
-  ACCENT_THEMES,
   DEFAULT_SETTINGS,
-  LAUNCHER_ANIMATION_OPTIONS,
-  type LauncherAnimation,
   type ThemeMode,
 } from '../types'
+import { UI_THEMES, themeVariables } from '../themes'
 import BrandIcon, { LAUNCHER_ICON_OPTIONS } from '../components/BrandIcon.vue'
 
 const message = useMessage()
@@ -32,10 +29,6 @@ function setTheme(mode: ThemeMode) {
 
 function setAccent(key: string) {
   store.settings.accent = key
-}
-
-function setAnimationEffect(effect: LauncherAnimation) {
-  store.settings.animationEffect = effect
 }
 
 const customIcon = computed(() => store.settings.launcherIcon.startsWith('data:'))
@@ -158,7 +151,7 @@ function onPlaceholderBlur() {
     <div class="page-header">
       <div>
         <h1>外观设置</h1>
-        <p>个性化快速启动的主题、透明度与搜索框显示效果。</p>
+        <p>选择整套界面风格，设置窗口与快速启动保持一致。</p>
       </div>
     </div>
 
@@ -181,10 +174,11 @@ function onPlaceholderBlur() {
         </div>
 
         <div class="field-group">
-          <div class="field-label">主题风格</div>
+          <div class="field-label">全局界面风格</div>
+          <p class="muted-tip">统一改变背景、侧栏、面板、表格、弹窗与启动器的材质和排版。</p>
           <div class="theme-styles">
             <button
-              v-for="item in ACCENT_THEMES"
+              v-for="item in UI_THEMES"
               :key="item.key"
               type="button"
               class="style-item"
@@ -192,12 +186,16 @@ function onPlaceholderBlur() {
               :aria-pressed="store.settings.accent === item.key"
               @click="setAccent(item.key)"
             >
-              <span class="style-dot" :style="{ background: item.color }">
-                <svg v-if="store.settings.accent === item.key" class="style-check" viewBox="0 0 24 24" width="12" height="12" aria-hidden="true">
-                  <path d="M20 6 9 17l-5-5" fill="none" stroke="currentColor" stroke-width="3" stroke-linecap="round" stroke-linejoin="round" />
-                </svg>
+              <span class="style-preview" :style="themeVariables(item, isDark)" aria-hidden="true">
+                <span class="style-preview-bar"><i></i><i></i><i></i></span>
+                <span class="style-preview-body">
+                  <span class="style-preview-nav"><i></i><i></i><i></i></span>
+                  <span class="style-preview-page"><b></b><span></span><span></span></span>
+                </span>
               </span>
-              <span class="style-label">{{ item.label }}</span>
+              <span class="style-copy"><span class="style-label">{{ item.label }}</span>
+                <span class="style-description">{{ item.description }}</span></span>
+              <span v-if="store.settings.accent === item.key" class="style-selected" aria-hidden="true">✓</span>
             </button>
           </div>
         </div>
@@ -256,51 +254,26 @@ function onPlaceholderBlur() {
         </div>
 
         <div class="field-group">
-          <div class="field-label">搜索结果动画</div>
-          <div class="animation-options" role="group" aria-label="搜索结果动画">
-            <motion.button
-              v-for="option in LAUNCHER_ANIMATION_OPTIONS"
-              :key="option.key"
-              type="button"
-              class="animation-option"
-              :class="{ active: store.settings.animationEffect === option.key }"
-              :aria-pressed="store.settings.animationEffect === option.key"
-              :whileHover="{ y: -2 }"
-              :whilePress="{ scale: 0.98 }"
-              @click="setAnimationEffect(option.key)"
-            >
-              <span class="animation-option-label">{{ option.label }}</span>
-              <span class="animation-option-description">{{ option.description }}</span>
-            </motion.button>
-          </div>
-          <p class="muted-tip">动画仅作用于主窗口的搜索结果列表，清空输入时会立即收起。</p>
-        </div>
-
-        <div class="field-group">
           <div class="field-label">启动器图标</div>
           <div class="icon-options">
-            <motion.button
+            <button
               v-for="opt in LAUNCHER_ICON_OPTIONS"
               :key="opt.key"
               type="button"
               class="icon-option"
               :class="{ active: store.settings.launcherIcon === opt.key }"
               :aria-pressed="store.settings.launcherIcon === opt.key"
-              :whileHover="{ y: -2 }"
-              :whilePress="{ scale: 0.97 }"
               @click="pickBuiltinIcon(opt.key)"
             >
               <span class="brand-chip icon-option-chip"><img :src="opt.image" alt="" /></span>
               <span>{{ opt.label }}</span>
-            </motion.button>
-            <motion.button
+            </button>
+            <button
               type="button"
               class="icon-option"
               :class="{ active: customIcon }"
               :aria-pressed="customIcon"
               title="上传自定义图标"
-              :whileHover="{ y: -2 }"
-              :whilePress="{ scale: 0.97 }"
               @click="openIconPicker"
             >
               <span class="brand-chip icon-option-chip">
@@ -308,7 +281,7 @@ function onPlaceholderBlur() {
                 <NIcon v-else :component="ImageOutline" :size="16" />
               </span>
               <span>{{ customIcon ? '自定义' : '自定义…' }}</span>
-            </motion.button>
+            </button>
           </div>
           <div v-if="customIcon" class="icon-custom-row">
             <span class="muted-text">已使用自定义图片，上传后自动缩放为 128×128。</span>
@@ -339,7 +312,7 @@ function onPlaceholderBlur() {
           <div class="preview-stage" :style="previewStageStyle">
             <div
               class="launcher preview-render"
-              :data-accent="store.settings.accent"
+              :data-ui-style="store.settings.accent"
               :class="{ dark: isDark }"
               :style="previewRenderStyle"
             >

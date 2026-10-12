@@ -2,7 +2,7 @@
 
 use rusqlite::Connection;
 use serde::{Deserialize, Serialize};
-use std::collections::{HashMap, VecDeque};
+use std::collections::HashMap;
 use std::path::Path;
 use std::path::PathBuf;
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
@@ -14,6 +14,7 @@ use tauri_plugin_opener::OpenerExt;
 use base64::Engine as _;
 
 mod database;
+mod everything;
 mod sync;
 
 static APP_SYNC_LOCK: std::sync::Mutex<()> = std::sync::Mutex::new(());
@@ -1894,8 +1895,6 @@ fn synced_item(item: SyncedItem) -> Item {
 }
 
 const FOLDER_ROOTS_KEY: &str = "folderRoots";
-const MAX_SYNC_DEPTH: usize = 24;
-const MAX_SYNC_ITEMS_PER_ROOT: usize = 20000;
 
 fn get_setting_value(app: &AppHandle, key: &str) -> Result<Option<String>, String> {
     with_db(app, |conn| {
@@ -1976,27 +1975,6 @@ fn default_standard_dirs(app: &AppHandle) -> Vec<FolderRoot> {
     roots
 }
 
-#[cfg(windows)]
-fn should_skip_entry(path: &Path) -> bool {
-    use std::os::windows::fs::MetadataExt;
-    const FILE_ATTRIBUTE_HIDDEN: u32 = 0x2;
-    const FILE_ATTRIBUTE_SYSTEM: u32 = 0x4;
-    const FILE_ATTRIBUTE_REPARSE_POINT: u32 = 0x400;
-    match std::fs::symlink_metadata(path) {
-        Ok(meta) => {
-            let attrs = meta.file_attributes();
-            attrs & (FILE_ATTRIBUTE_HIDDEN | FILE_ATTRIBUTE_SYSTEM | FILE_ATTRIBUTE_REPARSE_POINT) != 0
-        }
-        Err(_) => false,
-    }
-}
-
-#[cfg(not(windows))]
-fn should_skip_entry(path: &Path) -> bool {
-    let _ = path;
-    false
-}
-
 fn path_is_within(path: &str, root: &str) -> bool {
     let path = path.replace('/', "\\").to_lowercase();
     let root = root
@@ -2004,124 +1982,6 @@ fn path_is_within(path: &str, root: &str) -> bool {
         .trim_end_matches('\\')
         .to_lowercase();
     path == root || path.starts_with(&format!("{root}\\"))
-}
-
-fn scan_folder_items(
-    root: &FolderRoot,
-    out: &mut Vec<SyncedItem>,
-    protected: &mut Vec<(String, bool)>,
-    warnings: &mut Vec<String>,
-) {
-    let root_path = Path::new(&root.path);
-    match std::fs::metadata(root_path) {
-        Ok(meta) if meta.is_dir() => {}
-        Ok(_) => return,
-        Err(e) => {
-            // A missing directory on an accessible volume is a deletion. An offline
-            // drive/share or access error is not a trustworthy empty snapshot.
-            let volume = root_path.ancestors().last().unwrap_or(root_path);
-            if e.kind() != std::io::ErrorKind::NotFound || !volume.is_dir() {
-                protected.push((root.path.clone(), false));
-                warnings.push(format!("目录暂不可访问，保留原索引：{}（{e}）", root.path));
-            }
-            return;
-        }
-    }
-    let root_alias = normalize_alias(&root.name);
-    out.push(SyncedItem {
-        name: root.name.clone(),
-        alias: root_alias.clone(),
-        kind: "folder".into(),
-        url: root.path.clone(),
-        description: "同步目录".into(),
-        icon: String::new(),
-    });
-    if !root.recursive {
-        return;
-    }
-    let mut count = 0usize;
-    let mut queue = VecDeque::from([(root_path.to_path_buf(), 1usize)]);
-    while let Some((dir, depth)) = queue.pop_front() {
-        if count >= MAX_SYNC_ITEMS_PER_ROOT {
-            protected.push((root.path.clone(), true));
-            warnings.push(format!(
-                "目录达到 {} 项索引上限，保留未扫描部分：{}",
-                MAX_SYNC_ITEMS_PER_ROOT, root.path
-            ));
-            break;
-        }
-        if depth > MAX_SYNC_DEPTH {
-            protected.push((dir.to_string_lossy().into_owned(), true));
-            warnings.push(format!(
-                "目录达到 {} 层深度上限，保留未扫描部分：{}",
-                MAX_SYNC_DEPTH,
-                dir.display()
-            ));
-            continue;
-        }
-        let entries = match std::fs::read_dir(&dir) {
-            Ok(entries) => entries,
-            Err(e) => {
-                protected.push((dir.to_string_lossy().into_owned(), false));
-                warnings.push(format!(
-                    "目录读取失败，保留原索引：{}（{e}）",
-                    dir.display()
-                ));
-                continue;
-            }
-        };
-        let mut entries = entries.collect::<Vec<_>>();
-        if entries.iter().any(Result::is_err) {
-            protected.push((dir.to_string_lossy().into_owned(), false));
-            warnings.push(format!("目录未完整读取，保留原索引：{}", dir.display()));
-        }
-        entries.sort_by_key(|entry| {
-            entry
-                .as_ref()
-                .ok()
-                .map(|e| e.file_name().to_string_lossy().to_lowercase())
-        });
-        for entry in entries.into_iter().flatten() {
-            if count >= MAX_SYNC_ITEMS_PER_ROOT {
-                protected.push((root.path.clone(), true));
-                warnings.push(format!(
-                    "目录达到 {} 项索引上限，保留未扫描部分：{}",
-                    MAX_SYNC_ITEMS_PER_ROOT, root.path
-                ));
-                queue.clear();
-                break;
-            }
-            let path = entry.path();
-            let name = entry.file_name().to_string_lossy().to_string();
-            let meta = match std::fs::symlink_metadata(&path) {
-                Ok(meta) => meta,
-                Err(_) => {
-                    protected.push((path.to_string_lossy().into_owned(), false));
-                    continue;
-                }
-            };
-            if name.is_empty() || meta.is_symlink() || should_skip_entry(&path) {
-                continue;
-            }
-            #[cfg(not(windows))]
-            if name.starts_with('.') {
-                continue;
-            }
-            let is_dir = meta.is_dir();
-            out.push(SyncedItem {
-                name,
-                alias: root_alias.clone(),
-                kind: if is_dir { "folder" } else { "file" }.into(),
-                url: path.to_string_lossy().into_owned(),
-                description: format!("来自{}", root.name),
-                icon: String::new(),
-            });
-            count += 1;
-            if is_dir {
-                queue.push_back((path, depth + 1));
-            }
-        }
-    }
 }
 
 #[tauri::command]
@@ -2261,23 +2121,14 @@ fn list_directory(path: String) -> Result<Vec<DirEntry>, String> {
 fn sync_folders_now(app: &AppHandle) -> Result<SyncResult, String> {
     let _guard = FOLDER_SYNC_LOCK.lock().map_err(|e| e.to_string())?;
     let roots = load_folder_roots(app)?;
-    let mut items = Vec::new();
-    let mut protected = Vec::new();
-    let mut warnings = Vec::new();
-    for root in &roots {
-        scan_folder_items(root, &mut items, &mut protected, &mut warnings);
-    }
-    let items = items.into_iter().map(synced_item).collect::<Vec<_>>();
-    let mut result = with_db(app, |conn| {
+    let items = everything::scan(&roots)?
+        .into_iter()
+        .map(synced_item)
+        .collect::<Vec<_>>();
+    let result = with_db(app, |conn| {
         init_schema(conn)?;
-        sync::reconcile(conn, "folders", &items, |old| {
-            protected.iter().any(|(path, check_missing)| {
-                path_is_within(&old.url, path)
-                    && (!check_missing || Path::new(&old.url).try_exists().unwrap_or(true))
-            })
-        })
+        sync::reconcile(conn, "folders", &items, |_| false)
     })?;
-    result.warnings = warnings;
     finish_sync(app, "lastFolderSync", &result)?;
     Ok(result)
 }
@@ -2991,6 +2842,9 @@ fn toggle_launcher(app: &AppHandle) {
 }
 
 fn main() {
+    if everything::run_worker() {
+        return;
+    }
     let shortcut_plugin = {
         use tauri_plugin_global_shortcut::{Builder as ShortcutBuilder, ShortcutState};
         ShortcutBuilder::new()

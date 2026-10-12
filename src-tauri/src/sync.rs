@@ -92,6 +92,19 @@ pub fn reconcile(
         }
         result.total += 1;
         if let Some(old) = known.get(&identity) {
+            let description_is_generated = old.description.is_empty()
+                || old.description == "同步目录"
+                || old.description.starts_with("来自");
+            if old.name == item.name
+                && old.url == item.url
+                && old.args == item.args
+                && old.workdir == item.workdir
+                && (!old.alias.is_empty() || item.alias.is_empty())
+                && (!old.icon.is_empty() || item.icon.is_empty())
+                && (!description_is_generated || old.description == item.description)
+            {
+                continue;
+            }
             // Alias, enabled state and custom descriptions/icons remain user preferences.
             // Generated descriptions follow bookmark moves and directory/source changes.
             result.updated += tx
@@ -380,73 +393,6 @@ mod tests {
                 .unwrap(),
             1
         );
-    }
-
-    struct TestDirectory(std::path::PathBuf);
-    impl TestDirectory {
-        fn new() -> Self {
-            let path = std::env::temp_dir().join(format!(
-                "nexious-sync-test-{}-{}",
-                std::process::id(),
-                super::super::now_millis()
-            ));
-            std::fs::create_dir_all(&path).unwrap();
-            Self(path)
-        }
-    }
-    impl Drop for TestDirectory {
-        fn drop(&mut self) {
-            let _ = std::fs::remove_dir_all(&self.0);
-        }
-    }
-
-    #[test]
-    fn real_folder_rename_delete_overlap_and_removed_root() {
-        use super::super::{scan_folder_items, synced_item, FolderRoot};
-        let dir = TestDirectory::new();
-        let child = dir.0.join("child");
-        std::fs::create_dir(&child).unwrap();
-        let before = child.join("before.txt");
-        let after = child.join("after.txt");
-        std::fs::write(&before, "test").unwrap();
-        let root = FolderRoot {
-            path: dir.0.to_string_lossy().into_owned(),
-            name: "Root".into(),
-            recursive: true,
-        };
-        let overlapping = FolderRoot {
-            path: child.to_string_lossy().into_owned(),
-            name: "Nested alias".into(),
-            recursive: true,
-        };
-        let conn = database();
-        let scan = |roots: &[FolderRoot]| {
-            let mut items = Vec::new();
-            let mut protected = Vec::new();
-            let mut warnings = Vec::new();
-            for root in roots {
-                scan_folder_items(root, &mut items, &mut protected, &mut warnings);
-            }
-            assert!(protected.is_empty());
-            assert!(warnings.is_empty());
-            reconcile(
-                &conn,
-                "folders",
-                &items.into_iter().map(synced_item).collect::<Vec<_>>(),
-                |_| false,
-            )
-            .unwrap()
-        };
-        assert_eq!(scan(&[root.clone(), overlapping.clone()]).added, 3);
-        std::fs::rename(&before, &after).unwrap();
-        let renamed = scan(&[root.clone(), overlapping.clone()]);
-        assert_eq!((renamed.added, renamed.removed), (1, 1));
-        assert_eq!(scan(&[overlapping.clone()]).removed, 1); // child remains covered
-        std::fs::remove_file(&after).unwrap();
-        assert_eq!(scan(&[overlapping]).removed, 1);
-        std::fs::remove_dir(&child).unwrap();
-        std::fs::remove_dir(&dir.0).unwrap();
-        assert_eq!(scan(&[root]).removed, 1);
     }
 
     #[test]

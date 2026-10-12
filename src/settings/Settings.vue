@@ -3,7 +3,6 @@ import { onMounted, onUnmounted, ref } from 'vue'
 import { invoke } from '@tauri-apps/api/core'
 import { getCurrentWindow } from '@tauri-apps/api/window'
 import { NAlert, NButton, NIcon, useMessage } from 'naive-ui'
-import { AnimatePresence, motion } from 'motion-v'
 import {
   AppsOutline,
   CloseOutline,
@@ -108,56 +107,48 @@ onMounted(() => {
 </script>
 
 <template>
-  <div class="settings-root" :class="{ dark: isDark }" :data-accent="store.settings.accent">
+  <div class="settings-root" :class="{ dark: isDark }" :data-ui-style="store.settings.accent">
     <div class="titlebar" @mousedown="startDrag" @dblclick.self="toggleMaximize">
       <div class="tb-brand" @dblclick="toggleMaximize">
         <div class="brand-chip small"><BrandIcon :size="15" /></div>
         <b>Nexious Quick</b>
       </div>
       <div class="tb-controls">
-        <motion.button
+        <button
           class="tb-btn"
           aria-label="最小化"
           title="最小化"
           :disabled="!isTauri"
-          :whileHover="{ scale: 1.05 }"
-          :whilePress="{ scale: 0.94 }"
           @click="minimize"
         >
           <NIcon :component="RemoveOutline" :size="16" />
-        </motion.button>
-        <motion.button
+        </button>
+        <button
           class="tb-btn"
           :aria-label="maximized ? '还原' : '最大化'"
           :title="maximized ? '还原' : '最大化'"
           :disabled="!isTauri || fullscreen"
-          :whileHover="{ scale: 1.05 }"
-          :whilePress="{ scale: 0.94 }"
           @click="toggleMaximize"
         >
           <NIcon :component="maximized ? CopyOutline : SquareOutline" :size="14" />
-        </motion.button>
-        <motion.button
+        </button>
+        <button
           class="tb-btn"
           :aria-label="fullscreen ? '退出全屏' : '全屏'"
           :title="fullscreen ? '退出全屏' : '全屏'"
-          :whileHover="{ scale: 1.05 }"
-          :whilePress="{ scale: 0.94 }"
           @click="toggleFullscreen"
         >
           <NIcon :component="fullscreen ? ContractOutline : ExpandOutline" :size="16" />
-        </motion.button>
-        <motion.button
+        </button>
+        <button
           class="tb-btn close"
           aria-label="关闭"
           title="关闭"
           :disabled="!isTauri"
-          :whileHover="{ scale: 1.05 }"
-          :whilePress="{ scale: 0.94 }"
           @click="closeWindow"
         >
           <NIcon :component="CloseOutline" :size="16" />
-        </motion.button>
+        </button>
       </div>
     </div>
     <div class="settings-body">
@@ -193,20 +184,11 @@ onMounted(() => {
           <NButton size="small" :loading="store.savingSettings" @click="flushSettings">重试保存</NButton>
         </NAlert>
         <router-view v-slot="{ Component }">
-          <AnimatePresence :initial="false" mode="wait">
-            <motion.div
-              :key="route.name ?? 'data'"
-              class="settings-page-shell"
-              :initial="{ opacity: 0, x: 12 }"
-              :animate="{ opacity: 1, x: 0 }"
-              :exit="{ opacity: 0, x: -8 }"
-              :transition="{ duration: 0.2, ease: [0.22, 1, 0.36, 1] }"
-            >
-              <KeepAlive>
-                <component :is="Component" :key="route.name ?? 'data'" />
-              </KeepAlive>
-            </motion.div>
-          </AnimatePresence>
+          <div class="settings-page-shell">
+            <KeepAlive>
+              <component :is="Component" :key="route.name ?? 'data'" />
+            </KeepAlive>
+          </div>
         </router-view>
       </main>
     </div>

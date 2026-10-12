@@ -27,7 +27,6 @@ type Tab = 'application' | 'website' | 'folder'
 const tab = ref<Tab>('application')
 const keyword = ref('')
 const syncing = ref(false)
-const syncResult = ref<{ added: number; updated: number; removed: number; total: number; warnings: string[] } | null>(null)
 const showModal = ref(false)
 const editing = ref<Item | null>(null)
 const form = ref<Partial<Item>>({})
@@ -44,7 +43,7 @@ const sectionTitle = computed(() =>
 const syncButtonText = computed(() => {
   if (syncing.value) return '正在同步...'
   if (tab.value === 'website') return '同步收藏夹'
-  if (tab.value === 'folder') return '同步本地目录'
+  if (tab.value === 'folder') return '同步 Everything 索引'
   return '同步应用'
 })
 
@@ -225,8 +224,8 @@ async function addFolderRoot(path: string) {
       const r = await invoke<{ added: number; updated: number; removed: number; total: number; warnings: string[] }>('sync_folders', {
         onlyPath: path,
       })
-      syncResult.value = r
-      if (r.warnings.length) message.warning(r.warnings[0])
+
+      if (r.warnings.length) message.warning('部分位置暂不可用，已保留已有数据')
       else if (r.total === 0 && r.removed === 0) message.warning(`「${label}」没有扫描到可索引的文件或文件夹`)
       else message.success(`「${label}」同步完成：新增 ${r.added} 项，更新 ${r.updated} 项，移除 ${r.removed} 项`)
     } catch (syncErr) {
@@ -263,7 +262,7 @@ async function browseNativeFolderRoot() {
 
 watch(tab, (current) => {
   visibleCount.value = PAGE_CHUNK
-  syncResult.value = null
+
   if (current === 'folder' && isTauri) void refreshFolderRoots()
   void loadRows()
 })
@@ -299,7 +298,7 @@ function iconStyle(item: Item) {
 
 async function sync() {
   syncing.value = true
-  syncResult.value = null
+
   try {
     if (isTauri) {
       if (tab.value === 'folder') {
@@ -311,8 +310,8 @@ async function sync() {
       }
       const command = tab.value === 'website' ? 'sync_bookmarks' : tab.value === 'folder' ? 'sync_folders' : 'sync_apps'
       const r = await invoke<{ added: number; updated: number; removed: number; total: number; warnings: string[] }>(command)
-      syncResult.value = r
-      if (r.warnings.length) message.warning(r.warnings[0])
+
+      if (r.warnings.length) message.warning('部分位置暂不可用，已保留已有数据')
       else if (r.total === 0 && r.removed === 0) message.warning(tab.value === 'website' ? '未找到可同步的浏览器收藏夹' : '未找到可同步的数据')
       else message.success(`同步完成：新增 ${r.added} 项，更新 ${r.updated} 项，移除 ${r.removed} 项`)
       // 同步写入较多，稍后重新拉取当前标签页数据
@@ -615,7 +614,7 @@ async function browsePath() {
         <p>管理你的应用启动项，支持电脑应用、网站链接和文件/文件夹。</p>
       </div>
       <button class="ghost-btn" :disabled="syncing" @click="sync">
-        <NIcon :component="RefreshOutline" :size="15" :class="{ spinning: syncing }" />
+        <NIcon :component="RefreshOutline" :size="15" />
         {{ syncButtonText }}
       </button>
     </div>
@@ -670,7 +669,7 @@ async function browsePath() {
         <div class="sync-dirs-head">
           <div class="sync-dirs-info">
             <span class="sync-dirs-title">同步目录</span>
-            <span class="sync-dirs-sub">已选目录会持续自动同步，文件新增、重命名或删除后自动更新搜索结果（自动跳过隐藏与系统目录，按广度覆盖各子目录，单个目录上限约 2 万项）。</span>
+            <span class="sync-dirs-sub">通过 Everything 本地索引自动同步所选目录，新增、重命名和删除会更新搜索结果。请保持 Everything 运行。</span>
           </div>
           <div class="sync-dirs-actions">
             <button v-if="isTauri" class="ghost-btn small" type="button" @click="openFolderManager">
@@ -703,11 +702,6 @@ async function browsePath() {
         </div>
       </div>
 
-      <div v-if="syncResult" class="sync-result" role="status">
-        本次同步：新增 {{ syncResult.added }} 项，更新 {{ syncResult.updated }} 项，移除 {{ syncResult.removed }} 项，共 {{ syncResult.total }} 项
-        <div v-for="warning in syncResult.warnings" :key="warning">{{ warning }}</div>
-      </div>
-
       <table class="data-table">
         <thead>
           <tr>
@@ -733,7 +727,6 @@ async function browsePath() {
             <td class="col-actions">
               <button
                 class="row-btn launch"
-                :class="{ spinning: isLaunching(r.id) }"
                 :disabled="isLaunching(r.id)"
                 title="启动"
                 @click="launchItem(r)"
@@ -750,7 +743,7 @@ async function browsePath() {
           </tr>
           <tr v-if="itemsLoading">
             <td colspan="7" class="empty table-loading">
-              <NIcon :component="RefreshOutline" :size="14" class="spinning" />
+              <NIcon :component="RefreshOutline" :size="14" />
               正在加载数据…
             </td>
           </tr>
@@ -806,7 +799,7 @@ async function browsePath() {
                     title="自动获取该网站的图标"
                     @click="fetchWebsiteIcon(true)"
                   >
-                    <NIcon :component="fetchingIcon ? RefreshOutline : DownloadOutline" :size="13" :class="{ spinning: fetchingIcon }" />
+                    <NIcon :component="fetchingIcon ? RefreshOutline : DownloadOutline" :size="13" />
                     <span>{{ fetchingIcon ? '获取中…' : '自动获取' }}</span>
                   </button>
                 </template>
@@ -869,7 +862,7 @@ async function browsePath() {
           <FolderTree :added-paths="addedPaths" @add="addFolderRoot" />
         </div>
         <p class="fm-hint">
-          已加入的目录会立即开始同步，并在后台持续自动更新；也可点击「同步本地目录」手动检查。
+          已加入的目录会立即开始同步，并在后台持续自动更新；也可点击「同步 Everything 索引」手动检查。
         </p>
       </div>
     </NModal>

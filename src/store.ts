@@ -1,15 +1,13 @@
 import { computed, reactive, ref, watch } from 'vue'
 import { invoke } from '@tauri-apps/api/core'
 import { isTauri, storage } from './adapter'
+import { uiTheme } from './themes'
 import {
   DEFAULT_SETTINGS,
-  LAUNCHER_ANIMATION_OPTIONS,
   SEARCH_ENGINES,
-  accentTheme,
   type AppSettings,
   type Item,
   type ItemType,
-  type LauncherAnimation,
   type ThemeMode,
 } from './types'
 
@@ -18,6 +16,7 @@ export const store = reactive({
   settingsError: '',
   savingSettings: false,
   items: [] as Item[],
+  itemsRevision: 0,
   settings: { ...DEFAULT_SETTINGS } as AppSettings,
 })
 
@@ -38,16 +37,11 @@ function applySettings(map: Record<string, string>) {
   const s = map
   Object.assign(store.settings, {
     theme: (['system', 'light', 'dark'].includes(s.theme) ? s.theme : 'system') as ThemeMode,
-    accent: accentTheme(s.accent ?? '').key,
+    accent: uiTheme(s.accent ?? '').key,
     opacity: clamp(Number(s.opacity ?? DEFAULT_SETTINGS.opacity), 30, 100),
     searchRadius: clamp(Number(s.searchRadius ?? DEFAULT_SETTINGS.searchRadius), 0, 32),
     searchWidth: clamp(Number(s.searchWidth ?? DEFAULT_SETTINGS.searchWidth), 320, 720),
     searchHeight: clamp(Number(s.searchHeight ?? DEFAULT_SETTINGS.searchHeight), 36, 64),
-    animationEffect: (
-      LAUNCHER_ANIMATION_OPTIONS.some((option) => option.key === s.animationEffect)
-        ? s.animationEffect
-        : DEFAULT_SETTINGS.animationEffect
-    ) as LauncherAnimation,
     placeholderText: (s.placeholderText || '').trim().slice(0, 24) || DEFAULT_SETTINGS.placeholderText,
     // 旧版本保存的是内置图标 key，统一迁移到新的应用品牌图标；自定义图片继续保留。
     launcherIcon: s.launcherIcon?.startsWith('data:image/') ? s.launcherIcon : DEFAULT_SETTINGS.launcherIcon,
@@ -82,7 +76,6 @@ function toSettingsMap(s: AppSettings): Record<string, string> {
     searchRadius: String(s.searchRadius),
     searchWidth: String(s.searchWidth),
     searchHeight: String(s.searchHeight),
-    animationEffect: s.animationEffect,
     placeholderText: s.placeholderText,
     launcherIcon: s.launcherIcon,
     autoHide: String(s.autoHide),
@@ -142,6 +135,12 @@ export async function flushSettings() {
 
 let itemsLoadSeq = 0
 export async function reloadItems() {
+  // Everything may index millions of files. Desktop search already queries SQLite;
+  // notify the launcher instead of sending the entire index through the WebView.
+  if (isTauri) {
+    store.itemsRevision += 1
+    return
+  }
   const seq = ++itemsLoadSeq
   const items = sanitizeItems(await storage.loadItems())
   if (seq === itemsLoadSeq) store.items = items
@@ -242,7 +241,7 @@ export async function removeItem(id: number) {
 }
 
 export async function initStore(options: { loadItems?: boolean } = {}) {
-  // 设置窗口只加载轻量设置（用于外观主题等）；只有启动器需要整表条目供搜索
+  // 设置窗口按页取数；启动器监听数据变更，桌面搜索由后端查询。
   const withItems = options.loadItems !== false
   await storage.onSettingsChanged(receiveSettings)
   applySettings(await storage.loadSettings())
