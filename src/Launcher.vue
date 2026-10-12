@@ -242,6 +242,7 @@ watch([query, rows, () => store.settings.showIcons, () => store.settings.searchW
   scheduleResize()
 })
 watch(query, scheduleSearch, { immediate: true })
+watch(() => store.items, scheduleSearch)
 watch([() => store.settings.enabledWebsites, () => store.settings.enabledFolders], scheduleSearch)
 
 function onKeydown(e: KeyboardEvent) {

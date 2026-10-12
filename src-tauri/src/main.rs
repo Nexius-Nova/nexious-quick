@@ -13,6 +13,13 @@ use tauri_plugin_opener::OpenerExt;
 
 use base64::Engine as _;
 
+mod database;
+mod sync;
+
+static APP_SYNC_LOCK: std::sync::Mutex<()> = std::sync::Mutex::new(());
+static BOOKMARK_SYNC_LOCK: std::sync::Mutex<()> = std::sync::Mutex::new(());
+static FOLDER_SYNC_LOCK: std::sync::Mutex<()> = std::sync::Mutex::new(());
+
 #[cfg(windows)]
 #[link(name = "dwmapi")]
 extern "system" {
@@ -115,6 +122,7 @@ fn init_schema(conn: &Connection) -> Result<(), String> {
     ] {
         let _ = conn.execute(ddl, []);
     }
+    sync::init_schema(conn)?;
     Ok(())
 }
 
@@ -435,7 +443,9 @@ fn db_save_item(app: AppHandle, item: Item) -> Result<Item, String> {
         if item.id > 0 {
             conn.execute(
                 "UPDATE launch_items SET name=?1, alias=?2, type=?3, url=?4, args=?5, workdir=?6,
-                 description=?7, icon=?8, enabled=?9, updated_at=?10 WHERE id=?11",
+                 description=?7, icon=?8, enabled=?9, updated_at=?10,
+                 sync_source=CASE WHEN type<>?3 OR url<>?4 OR args<>?5 THEN '' ELSE sync_source END
+                 WHERE id=?11",
                 rusqlite::params![
                     item.name,
                     item.alias,
@@ -532,7 +542,7 @@ fn dedupe_items(app: &AppHandle) -> Result<usize, String> {
         init_schema(conn)?;
         let tx = conn.unchecked_transaction().map_err(|e| e.to_string())?;
         let mut stmt = tx
-            .prepare("SELECT id, name, type, url, args, alias, description, icon FROM launch_items ORDER BY id")
+            .prepare("SELECT id, name, type, url, args, alias, description, icon, sync_source FROM launch_items ORDER BY id")
             .map_err(|e| e.to_string())?;
         let rows = stmt
             .query_map([], |row| {
@@ -545,6 +555,7 @@ fn dedupe_items(app: &AppHandle) -> Result<usize, String> {
                     row.get::<_, String>(5)?,
                     row.get::<_, String>(6)?,
                     row.get::<_, String>(7)?,
+                    row.get::<_, String>(8)?,
                 ))
             })
             .map_err(|e| e.to_string())?;
@@ -552,14 +563,14 @@ fn dedupe_items(app: &AppHandle) -> Result<usize, String> {
         let mut best: HashMap<String, (usize, i64)> = HashMap::new();
         let mut to_delete: Vec<i64> = Vec::new();
         for row in rows {
-            let (id, name, kind, url, args, alias, description, icon) = row.map_err(|e| e.to_string())?;
+            let (id, name, kind, url, args, alias, description, icon, source) = row.map_err(|e| e.to_string())?;
             let Some(key) = item_dedupe_key(&kind, &name, &url, &args) else {
                 continue;
             };
             let richness = [alias.trim(), description.trim(), icon.trim()]
                 .iter()
                 .filter(|value| !value.is_empty())
-                .count();
+                .count() + if source.is_empty() { 4 } else { 0 };
             match best.get(&key) {
                 Some((best_rich, _)) if richness <= *best_rich => {
                     to_delete.push(id);
@@ -1500,15 +1511,17 @@ struct ScannedApp {
     icon: String,
 }
 
-#[derive(Serialize)]
+#[derive(Default, Serialize)]
 struct SyncResult {
     added: i32,
     updated: i32,
+    removed: i32,
     total: i32,
+    warnings: Vec<String>,
 }
 
 const SCAN_SCRIPT: &str = r#"
-$ErrorActionPreference = 'SilentlyContinue'
+$ErrorActionPreference = 'Stop'
 [Console]::OutputEncoding = [System.Text.Encoding]::UTF8
 Add-Type -AssemblyName System.Drawing
 $shell = New-Object -ComObject WScript.Shell
@@ -1576,6 +1589,10 @@ function Add-App([string]$name, [string]$target, [string]$argList, [string]$work
     $target = ([string]$target).Trim()
     $argList = ([string]$argList).Trim()
     if (-not $name -or -not $target) { return }
+    if ([IO.Path]::IsPathRooted($target) -and -not (Test-Path -LiteralPath $target)) { return }
+    if ($target -match '^shell:AppsFolder\\(.+)!') {
+        if (-not $pfMap.ContainsKey($Matches[1].ToLower())) { return }
+    }
     $key = ($target + '|' + $argList).ToLower()
     if ($list.ContainsKey($key)) {
         if ($pkg -and -not $list[$key]['pkg']) { $list[$key]['pkg'] = $pkg }
@@ -1612,14 +1629,16 @@ function Read-Lnk([string]$file) {
 }
 
 foreach ($dir in @("$env:ProgramData\Microsoft\Windows\Start Menu\Programs", "$env:APPDATA\Microsoft\Windows\Start Menu\Programs")) {
-    Get-ChildItem -Path $dir -Filter *.lnk -Recurse | ForEach-Object {
+    if (-not (Test-Path -LiteralPath $dir)) { continue }
+    Get-ChildItem -LiteralPath $dir -Filter *.lnk -Recurse | ForEach-Object {
         $i = Read-Lnk $_.FullName
         if ($i) { Add-App $i['name'] $i['target'] $i['args'] $i['dir'] '' }
     }
 }
 
-foreach ($dir in @("$env:USERPROFILE\Desktop", "$env:PUBLIC\Desktop")) {
-    Get-ChildItem -Path $dir -Filter *.lnk -Recurse | ForEach-Object {
+foreach ($dir in @([Environment]::GetFolderPath('Desktop'), [Environment]::GetFolderPath('CommonDesktopDirectory'))) {
+    if (-not (Test-Path -LiteralPath $dir)) { continue }
+    Get-ChildItem -LiteralPath $dir -Filter *.lnk -Recurse | ForEach-Object {
         $i = Read-Lnk $_.FullName
         if ($i) { Add-AppOnce $i['name'] $i['target'] $i['args'] $i['dir'] '' }
     }
@@ -1631,6 +1650,7 @@ $shellTargets = @{
     '::{2559A1F3-21D7-11D4-BDAF-00C04F60B9F0}' = "$env:windir\System32\shell32.dll"
 }
 $appsFolder = (New-Object -ComObject Shell.Application).NameSpace('shell:AppsFolder')
+if (-not $appsFolder) { throw 'Cannot read installed applications' }
 foreach ($it in $appsFolder.Items()) {
     $name = ([string]$it.Name).Trim()
     if (-not $name) { continue }
@@ -1706,28 +1726,64 @@ fn scan_apps() -> Result<Vec<ScannedApp>, String> {
     hide_console(&mut cmd);
     let output = cmd.output().map_err(|e| err_msg("无法启动系统扫描", e))?;
     if !output.status.success() {
-        return Err("系统应用扫描失败".into());
+        return Err(format!(
+            "系统应用扫描失败，保留原索引：{}",
+            String::from_utf8_lossy(&output.stderr).trim()
+        ));
     }
     let stdout = String::from_utf8_lossy(&output.stdout).to_string();
-    let parsed: serde_json::Value = serde_json::from_str(stdout.trim())
-        .map_err(|e| err_msg("解析扫描结果失败", e))?;
+    let parsed: serde_json::Value =
+        serde_json::from_str(stdout.trim()).map_err(|e| err_msg("解析扫描结果失败", e))?;
     let mut apps = Vec::new();
-    if let Some(list) = parsed.get("apps").and_then(|v| v.as_array()) {
+    {
+        let list = parsed
+            .get("apps")
+            .and_then(|v| v.as_array())
+            .ok_or("系统应用扫描结果不完整，保留原索引")?;
         for a in list {
-            let name = a.get("name").and_then(|v| v.as_str()).unwrap_or("").trim().to_string();
-            let target = a.get("target").and_then(|v| v.as_str()).unwrap_or("").trim().to_string();
+            let name = a
+                .get("name")
+                .and_then(|v| v.as_str())
+                .unwrap_or("")
+                .trim()
+                .to_string();
+            let target = a
+                .get("target")
+                .and_then(|v| v.as_str())
+                .unwrap_or("")
+                .trim()
+                .to_string();
             if name.is_empty() || target.is_empty() {
                 continue;
             }
             let lower = name.to_lowercase();
-            const SKIP: [&str; 6] = ["uninstall", "卸载", "帮助", "readme", "troubleshoot", "许可"];
+            const SKIP: [&str; 6] = [
+                "uninstall",
+                "卸载",
+                "帮助",
+                "readme",
+                "troubleshoot",
+                "许可",
+            ];
             if SKIP.iter().any(|s| lower.contains(s)) {
                 continue;
             }
             apps.push(ScannedApp {
-                icon: a.get("icon").and_then(|v| v.as_str()).unwrap_or("").to_string(),
-                args: a.get("args").and_then(|v| v.as_str()).unwrap_or("").to_string(),
-                dir: a.get("dir").and_then(|v| v.as_str()).unwrap_or("").to_string(),
+                icon: a
+                    .get("icon")
+                    .and_then(|v| v.as_str())
+                    .unwrap_or("")
+                    .to_string(),
+                args: a
+                    .get("args")
+                    .and_then(|v| v.as_str())
+                    .unwrap_or("")
+                    .to_string(),
+                dir: a
+                    .get("dir")
+                    .and_then(|v| v.as_str())
+                    .unwrap_or("")
+                    .to_string(),
                 name,
                 target,
             });
@@ -1736,81 +1792,46 @@ fn scan_apps() -> Result<Vec<ScannedApp>, String> {
     Ok(apps)
 }
 
+fn finish_sync(app: &AppHandle, key: &str, result: &SyncResult) -> Result<(), String> {
+    if result.added + result.updated + result.removed > 0 {
+        let _ = app.emit(ITEMS_CHANGED_EVENT, ());
+    }
+    let millis = now_millis().to_string();
+    set_setting_sync(app, key, &millis)?;
+    let mut patch = HashMap::new();
+    patch.insert(key.to_string(), millis);
+    let _ = app.emit(SETTINGS_CHANGED_EVENT, patch);
+    Ok(())
+}
+
 fn merge_scanned(app: &AppHandle) -> Result<SyncResult, String> {
-    let apps = scan_apps()?;
-    let mut result = SyncResult { added: 0, updated: 0, total: apps.len() as i32 };
-    with_db(app, |conn| {
-        init_schema(conn)?;
-        // 单事务批量写入，避免逐条提交造成大量磁盘 IO
-        let tx = conn.unchecked_transaction().map_err(|e| e.to_string())?;
-        let mut known = HashMap::<String, i64>::new();
-        {
-            let mut stmt = tx
-                .prepare("SELECT id, url, args FROM launch_items WHERE type='application'")
-                .map_err(|e| e.to_string())?;
-            let rows = stmt
-                .query_map([], |row| {
-                    Ok((
-                        row.get::<_, i64>(0)?,
-                        row.get::<_, String>(1)?,
-                        row.get::<_, String>(2)?,
-                    ))
-                })
-                .map_err(|e| e.to_string())?;
-            for row in rows.flatten() {
-                // 与扫描端一致：同一个 exe 的不同启动参数是不同应用，需分别保留
-                known
-                    .entry(format!("{}|{}", row.1.to_lowercase(), row.2.trim().to_lowercase()))
-                    .or_insert(row.0);
-            }
-        }
-        for a in &apps {
-            let icon_data_url = if a.icon.is_empty() {
+    // Cover scanning and commit with the same lock: an older scan cannot restore deleted rows.
+    let _guard = APP_SYNC_LOCK.lock().map_err(|e| e.to_string())?;
+    let items = scan_apps()?
+        .into_iter()
+        .map(|a| Item {
+            id: 0,
+            name: a.name,
+            alias: String::new(),
+            kind: "application".into(),
+            url: a.target,
+            args: a.args,
+            workdir: a.dir,
+            description: String::new(),
+            icon: if a.icon.is_empty() {
                 String::new()
             } else {
                 format!("data:image/png;base64,{}", a.icon)
-            };
-            let key = format!("{}|{}", a.target.to_lowercase(), a.args.trim().to_lowercase());
-            if let Some(&id) = known.get(&key) {
-                // 字段没有变化时跳过写入，减少无谓的 DB 写入
-                tx.execute(
-                    "UPDATE launch_items SET name=?1, args=?2, workdir=?3,
-                     icon=CASE WHEN ?4='' THEN icon ELSE ?4 END
-                     WHERE id=?5 AND (name<>?1 OR args<>?2 OR workdir<>?3 OR (?4<>'' AND icon<>?4))",
-                    rusqlite::params![a.name, a.args, a.dir, icon_data_url, id],
-                )
-                .map_err(|e| e.to_string())?;
-                result.updated += 1;
-            } else {
-                tx.execute(
-                    "INSERT INTO launch_items (name, alias, type, url, args, workdir, description, icon, enabled, updated_at)
-                     VALUES (?1,'','application',?2,?3,?4,'',?5,1,'')",
-                    rusqlite::params![a.name, a.target, a.args, a.dir, icon_data_url],
-                )
-                .map_err(|e| e.to_string())?;
-                result.added += 1;
-            }
-        }
-        tx.commit().map_err(|e| e.to_string())?;
-        Ok(())
+            },
+            enabled: true,
+            updated_at: String::new(),
+        })
+        .collect::<Vec<_>>();
+    let result = with_db(app, |conn| {
+        init_schema(conn)?;
+        sync::reconcile(conn, "apps", &items, |_| false)
     })?;
-    // 同步后清理历史重复项（文件/文件夹按 路径+名称 判定）
-    dedupe_items(app)?;
-    let millis = now_millis().to_string();
-    set_setting_sync(app, "lastSync", &millis)?;
-    set_setting_sync(app, "lastSyncSummary", &format!("added:{},updated:{}", result.added, result.updated))?;
-    let mut patch = HashMap::new();
-    patch.insert("lastSync".to_string(), millis.clone());
-    let _ = app.emit(SETTINGS_CHANGED_EVENT, patch);
-    with_db(app, |conn| {
-        conn.execute(
-            "INSERT INTO sync_records (added, updated, created_at) VALUES (?1, ?2, ?3)",
-            rusqlite::params![result.added, result.updated, millis],
-        )
-        .map_err(|e| e.to_string())?;
-        Ok(())
-    })?;
-    let _ = app.emit(ITEMS_CHANGED_EVENT, ());
+    finish_sync(app, "lastSync", &result)?;
     Ok(result)
 }
 
@@ -1856,62 +1877,27 @@ struct DirEntry {
     is_dir: bool,
 }
 
-fn merge_synced_items(app: &AppHandle, items: &[SyncedItem]) -> Result<SyncResult, String> {
-    let mut result = SyncResult { added: 0, updated: 0, total: items.len() as i32 };
-    with_db(app, |conn| {
-        init_schema(conn)?;
-        let tx = conn.unchecked_transaction().map_err(|e| e.to_string())?;
-        let mut known = HashMap::<String, i64>::new();
-        {
-            let mut stmt = tx
-                .prepare("SELECT id, url FROM launch_items")
-                .map_err(|e| e.to_string())?;
-            let rows = stmt
-                .query_map([], |row| Ok((row.get::<_, i64>(0)?, row.get::<_, String>(1)?)))
-                .map_err(|e| e.to_string())?;
-            for row in rows.flatten() {
-                known.entry(row.1.to_lowercase()).or_insert(row.0);
-            }
-        }
-        for item in items {
-            let key = item.url.to_lowercase();
-            if let Some(&id) = known.get(&key) {
-                // 保留用户已填写的别名/描述/图标；仅在实际发生变化时写入
-                tx.execute(
-                    "UPDATE launch_items SET name=?1, alias=CASE WHEN alias='' THEN ?2 ELSE alias END,
-                     type=?3, description=CASE WHEN description='' THEN ?4 ELSE description END,
-                     icon=CASE WHEN icon='' THEN ?5 ELSE icon END, enabled=1
-                     WHERE id=?6 AND (name<>?1 OR type<>?3 OR enabled<>1
-                       OR (alias='' AND ?2<>'')
-                       OR (description='' AND ?4<>'')
-                       OR (icon='' AND ?5<>''))",
-                    rusqlite::params![item.name, item.alias, item.kind, item.description, item.icon, id],
-                )
-                .map_err(|e| e.to_string())?;
-                result.updated += 1;
-            } else {
-                tx.execute(
-                    "INSERT INTO launch_items (name, alias, type, url, args, workdir, description, icon, enabled, updated_at)
-                     VALUES (?1,?2,?3,?4,'','',?5,?6,1,?7)",
-                    rusqlite::params![item.name, item.alias, item.kind, item.url, item.description, item.icon, now_millis().to_string()],
-                )
-                .map_err(|e| e.to_string())?;
-                result.added += 1;
-            }
-        }
-        tx.commit().map_err(|e| e.to_string())?;
-        Ok(())
-    })?;
-    // 同步后清理历史重复项（文件/文件夹按 路径+名称 判定）
-    dedupe_items(app)?;
-    Ok(result)
+fn synced_item(item: SyncedItem) -> Item {
+    Item {
+        id: 0,
+        name: item.name,
+        alias: item.alias,
+        kind: item.kind,
+        url: item.url,
+        args: String::new(),
+        workdir: String::new(),
+        description: item.description,
+        icon: item.icon,
+        enabled: true,
+        updated_at: String::new(),
+    }
 }
 
 const FOLDER_ROOTS_KEY: &str = "folderRoots";
 const MAX_SYNC_DEPTH: usize = 24;
 const MAX_SYNC_ITEMS_PER_ROOT: usize = 20000;
 
-fn get_setting_value(app: &AppHandle, key: &str) -> Option<String> {
+fn get_setting_value(app: &AppHandle, key: &str) -> Result<Option<String>, String> {
     with_db(app, |conn| {
         init_schema(conn)?;
         let mut stmt = conn
@@ -1923,8 +1909,6 @@ fn get_setting_value(app: &AppHandle, key: &str) -> Option<String> {
         }
         Ok(None)
     })
-    .ok()
-    .flatten()
 }
 
 fn root_name_of(path: &str) -> String {
@@ -1952,16 +1936,17 @@ fn normalize_alias(name: &str) -> String {
 }
 
 /// 首次运行：用系统常用目录作为默认同步目录并落库；用户主动删除后为空数组时不再回退。
-fn load_folder_roots(app: &AppHandle) -> Vec<FolderRoot> {
-    match get_setting_value(app, FOLDER_ROOTS_KEY) {
-        Some(raw) if raw.trim().is_empty() || raw.trim() == "[]" => Vec::new(),
-        Some(raw) => serde_json::from_str::<Vec<FolderRoot>>(&raw).unwrap_or_default(),
+fn load_folder_roots(app: &AppHandle) -> Result<Vec<FolderRoot>, String> {
+    match get_setting_value(app, FOLDER_ROOTS_KEY)? {
+        Some(raw) if raw.trim().is_empty() || raw.trim() == "[]" => Ok(Vec::new()),
+        Some(raw) => serde_json::from_str::<Vec<FolderRoot>>(&raw)
+            .map_err(|e| format!("同步目录配置无效，保留原索引：{e}")),
         None => {
             let defaults = default_standard_dirs(app);
             if !defaults.is_empty() {
-                let _ = save_folder_roots(app, &defaults);
+                save_folder_roots(app, &defaults)?;
             }
-            defaults
+            Ok(defaults)
         }
     }
 }
@@ -2012,18 +1997,42 @@ fn should_skip_entry(path: &Path) -> bool {
     false
 }
 
-fn scan_folder_items(root: &FolderRoot, out: &mut Vec<SyncedItem>) {
+fn path_is_within(path: &str, root: &str) -> bool {
+    let path = path.replace('/', "\\").to_lowercase();
+    let root = root
+        .replace('/', "\\")
+        .trim_end_matches('\\')
+        .to_lowercase();
+    path == root || path.starts_with(&format!("{root}\\"))
+}
+
+fn scan_folder_items(
+    root: &FolderRoot,
+    out: &mut Vec<SyncedItem>,
+    protected: &mut Vec<(String, bool)>,
+    warnings: &mut Vec<String>,
+) {
     let root_path = Path::new(&root.path);
-    if !root_path.is_dir() {
-        return;
+    match std::fs::metadata(root_path) {
+        Ok(meta) if meta.is_dir() => {}
+        Ok(_) => return,
+        Err(e) => {
+            // A missing directory on an accessible volume is a deletion. An offline
+            // drive/share or access error is not a trustworthy empty snapshot.
+            let volume = root_path.ancestors().last().unwrap_or(root_path);
+            if e.kind() != std::io::ErrorKind::NotFound || !volume.is_dir() {
+                protected.push((root.path.clone(), false));
+                warnings.push(format!("目录暂不可访问，保留原索引：{}（{e}）", root.path));
+            }
+            return;
+        }
     }
-    let root_url = root_path.to_string_lossy().to_string();
     let root_alias = normalize_alias(&root.name);
     out.push(SyncedItem {
         name: root.name.clone(),
         alias: root_alias.clone(),
         kind: "folder".into(),
-        url: root_url,
+        url: root.path.clone(),
         description: "同步目录".into(),
         icon: String::new(),
     });
@@ -2031,55 +2040,97 @@ fn scan_folder_items(root: &FolderRoot, out: &mut Vec<SyncedItem>) {
         return;
     }
     let mut count = 0usize;
-    // 广度优先遍历：先覆盖各目录的浅层内容，避免超深子目录（如 .pnpm-store 缓存）
-    // 像之前 DFS 那样独占整棵树的额度，导致其它目录（如下载目录）的文件完全缺失。
-    let mut queue: VecDeque<(PathBuf, usize)> = VecDeque::new();
-    queue.push_back((root_path.to_path_buf(), 1));
+    let mut queue = VecDeque::from([(root_path.to_path_buf(), 1usize)]);
     while let Some((dir, depth)) = queue.pop_front() {
-        if depth > MAX_SYNC_DEPTH || count >= MAX_SYNC_ITEMS_PER_ROOT {
+        if count >= MAX_SYNC_ITEMS_PER_ROOT {
+            protected.push((root.path.clone(), true));
+            warnings.push(format!(
+                "目录达到 {} 项索引上限，保留未扫描部分：{}",
+                MAX_SYNC_ITEMS_PER_ROOT, root.path
+            ));
+            break;
+        }
+        if depth > MAX_SYNC_DEPTH {
+            protected.push((dir.to_string_lossy().into_owned(), true));
+            warnings.push(format!(
+                "目录达到 {} 层深度上限，保留未扫描部分：{}",
+                MAX_SYNC_DEPTH,
+                dir.display()
+            ));
             continue;
         }
-        let Ok(entries) = std::fs::read_dir(&dir) else { continue };
-        let mut sub_dirs: Vec<(PathBuf, String)> = Vec::new();
-        for entry in entries.flatten() {
+        let entries = match std::fs::read_dir(&dir) {
+            Ok(entries) => entries,
+            Err(e) => {
+                protected.push((dir.to_string_lossy().into_owned(), false));
+                warnings.push(format!(
+                    "目录读取失败，保留原索引：{}（{e}）",
+                    dir.display()
+                ));
+                continue;
+            }
+        };
+        let mut entries = entries.collect::<Vec<_>>();
+        if entries.iter().any(Result::is_err) {
+            protected.push((dir.to_string_lossy().into_owned(), false));
+            warnings.push(format!("目录未完整读取，保留原索引：{}", dir.display()));
+        }
+        entries.sort_by_key(|entry| {
+            entry
+                .as_ref()
+                .ok()
+                .map(|e| e.file_name().to_string_lossy().to_lowercase())
+        });
+        for entry in entries.into_iter().flatten() {
             if count >= MAX_SYNC_ITEMS_PER_ROOT {
+                protected.push((root.path.clone(), true));
+                warnings.push(format!(
+                    "目录达到 {} 项索引上限，保留未扫描部分：{}",
+                    MAX_SYNC_ITEMS_PER_ROOT, root.path
+                ));
+                queue.clear();
                 break;
             }
             let path = entry.path();
-            let file_name = entry.file_name().to_string_lossy().to_string();
-            if file_name.is_empty() || should_skip_entry(&path) {
+            let name = entry.file_name().to_string_lossy().to_string();
+            let meta = match std::fs::symlink_metadata(&path) {
+                Ok(meta) => meta,
+                Err(_) => {
+                    protected.push((path.to_string_lossy().into_owned(), false));
+                    continue;
+                }
+            };
+            if name.is_empty() || meta.is_symlink() || should_skip_entry(&path) {
                 continue;
             }
             #[cfg(not(windows))]
-            if file_name.starts_with('.') {
+            if name.starts_with('.') {
                 continue;
             }
-            let is_dir = path.is_dir();
-            let kind = if is_dir { "folder" } else { "file" };
+            let is_dir = meta.is_dir();
             out.push(SyncedItem {
-                name: file_name.clone(),
+                name,
                 alias: root_alias.clone(),
-                kind: kind.into(),
-                url: path.to_string_lossy().to_string(),
+                kind: if is_dir { "folder" } else { "file" }.into(),
+                url: path.to_string_lossy().into_owned(),
                 description: format!("来自{}", root.name),
                 icon: String::new(),
             });
             count += 1;
             if is_dir {
-                sub_dirs.push((path, file_name));
+                queue.push_back((path, depth + 1));
             }
-        }
-        // 子目录按名称升序入队，广度优先下各分支被均匀、稳定地覆盖
-        sub_dirs.sort_by(|a, b| a.1.to_lowercase().cmp(&b.1.to_lowercase()));
-        for (sub, _) in sub_dirs {
-            queue.push_back((sub, depth + 1));
         }
     }
 }
 
 #[tauri::command]
-fn get_folder_roots(app: AppHandle) -> Vec<FolderRoot> {
-    load_folder_roots(&app)
+async fn get_folder_roots(app: AppHandle) -> Result<Vec<FolderRoot>, String> {
+    run_in_background(move || {
+        let _guard = FOLDER_SYNC_LOCK.lock().map_err(|e| e.to_string())?;
+        load_folder_roots(&app)
+    })
+    .await
 }
 
 #[tauri::command]
@@ -2088,40 +2139,48 @@ fn default_folder_roots(app: AppHandle) -> Vec<FolderRoot> {
 }
 
 #[tauri::command]
-fn add_folder_root(app: AppHandle, path: String) -> Result<Vec<FolderRoot>, String> {
-    let trimmed = {
-        let value = path.trim();
-        let lower = value.to_lowercase();
-        if value.ends_with('\\') && !(lower.ends_with(":\\") || lower.ends_with(":/")) {
-            value.trim_end_matches('\\').to_string()
-        } else {
-            value.to_string()
+async fn add_folder_root(app: AppHandle, path: String) -> Result<Vec<FolderRoot>, String> {
+    run_in_background(move || {
+        let _guard = FOLDER_SYNC_LOCK.lock().map_err(|e| e.to_string())?;
+        let trimmed = {
+            let value = path.trim();
+            let lower = value.to_lowercase();
+            if value.ends_with('\\') && !(lower.ends_with(":\\") || lower.ends_with(":/")) {
+                value.trim_end_matches('\\').to_string()
+            } else {
+                value.to_string()
+            }
+        };
+        if trimmed.is_empty() {
+            return Err("目录不能为空".into());
         }
-    };
-    if trimmed.is_empty() {
-        return Err("目录不能为空".into());
-    }
-    if !Path::new(&trimmed).is_dir() {
-        return Err(format!("目录不存在或不可访问：{trimmed}"));
-    }
-    let mut roots = load_folder_roots(&app);
-    if !roots.iter().any(|r| r.path.eq_ignore_ascii_case(&trimmed)) {
-        roots.push(FolderRoot {
-            path: trimmed.clone(),
-            name: root_name_of(&trimmed),
-            recursive: true,
-        });
-        save_folder_roots(&app, &roots)?;
-    }
-    Ok(roots)
+        if !Path::new(&trimmed).is_dir() {
+            return Err(format!("目录不存在或不可访问：{trimmed}"));
+        }
+        let mut roots = load_folder_roots(&app)?;
+        if !roots.iter().any(|r| r.path.eq_ignore_ascii_case(&trimmed)) {
+            roots.push(FolderRoot {
+                path: trimmed.clone(),
+                name: root_name_of(&trimmed),
+                recursive: true,
+            });
+            save_folder_roots(&app, &roots)?;
+        }
+        Ok(roots)
+    })
+    .await
 }
 
 #[tauri::command]
-fn remove_folder_root(app: AppHandle, path: String) -> Result<Vec<FolderRoot>, String> {
-    let mut roots = load_folder_roots(&app);
-    roots.retain(|r| !r.path.eq_ignore_ascii_case(&path));
-    save_folder_roots(&app, &roots)?;
-    Ok(roots)
+async fn remove_folder_root(app: AppHandle, path: String) -> Result<Vec<FolderRoot>, String> {
+    run_in_background(move || {
+        let _guard = FOLDER_SYNC_LOCK.lock().map_err(|e| e.to_string())?;
+        let mut roots = load_folder_roots(&app)?;
+        roots.retain(|r| !r.path.eq_ignore_ascii_case(&path));
+        save_folder_roots(&app, &roots)?;
+        Ok(roots)
+    })
+    .await
 }
 
 fn drive_entries() -> Vec<DirEntry> {
@@ -2199,35 +2258,36 @@ fn list_directory(path: String) -> Result<Vec<DirEntry>, String> {
     Ok(entries)
 }
 
+fn sync_folders_now(app: &AppHandle) -> Result<SyncResult, String> {
+    let _guard = FOLDER_SYNC_LOCK.lock().map_err(|e| e.to_string())?;
+    let roots = load_folder_roots(app)?;
+    let mut items = Vec::new();
+    let mut protected = Vec::new();
+    let mut warnings = Vec::new();
+    for root in &roots {
+        scan_folder_items(root, &mut items, &mut protected, &mut warnings);
+    }
+    let items = items.into_iter().map(synced_item).collect::<Vec<_>>();
+    let mut result = with_db(app, |conn| {
+        init_schema(conn)?;
+        sync::reconcile(conn, "folders", &items, |old| {
+            protected.iter().any(|(path, check_missing)| {
+                path_is_within(&old.url, path)
+                    && (!check_missing || Path::new(&old.url).try_exists().unwrap_or(true))
+            })
+        })
+    })?;
+    result.warnings = warnings;
+    finish_sync(app, "lastFolderSync", &result)?;
+    Ok(result)
+}
+
 #[tauri::command]
 async fn sync_folders(app: AppHandle, only_path: Option<String>) -> Result<SyncResult, String> {
-    run_in_background(move || {
-        let roots = load_folder_roots(&app);
-        let mut items = Vec::new();
-        for root in roots {
-            let matched = match &only_path {
-                Some(path) => root.path.eq_ignore_ascii_case(path),
-                None => true,
-            };
-            if matched {
-                scan_folder_items(&root, &mut items);
-            }
-        }
-        let mut unique = HashMap::<String, SyncedItem>::new();
-        for item in items {
-            unique.entry(item.url.to_lowercase()).or_insert(item);
-        }
-        let items: Vec<SyncedItem> = unique.into_values().collect();
-        let result = merge_synced_items(&app, &items)?;
-        let millis = now_millis().to_string();
-        set_setting_sync(&app, "lastFolderSync", &millis)?;
-        let mut patch = HashMap::new();
-        patch.insert("lastFolderSync".to_string(), millis);
-        let _ = app.emit(SETTINGS_CHANGED_EVENT, patch);
-        let _ = app.emit(ITEMS_CHANGED_EVENT, ());
-        Ok(result)
-    })
-    .await
+    // Always reconcile the union of configured roots, including overlaps. A one-root
+    // request must never remove entries belonging to another root.
+    let _ = only_path;
+    run_in_background(move || sync_folders_now(&app)).await
 }
 
 /// Chromium 系浏览器（Chrome/Edge/Brave）书签文件顶层没有 children，
@@ -2551,23 +2611,44 @@ fn is_default_profile(label: &str) -> bool {
         .unwrap_or(true)
 }
 
-fn bookmark_sources() -> Vec<(String, PathBuf)> {
+fn bookmark_sources() -> Result<Vec<(String, PathBuf)>, String> {
     let mut sources = Vec::new();
-    if let Ok(local) = std::env::var("LOCALAPPDATA") {
+    {
+        let local =
+            std::env::var("LOCALAPPDATA").map_err(|e| format!("无法定位浏览器收藏夹：{e}"))?;
         let root = PathBuf::from(local);
         for (name, profile_root) in [
             ("Edge", root.join("Microsoft/Edge/User Data")),
             ("Chrome", root.join("Google/Chrome/User Data")),
             ("Brave", root.join("BraveSoftware/Brave-Browser/User Data")),
         ] {
-            let Ok(profiles) = std::fs::read_dir(&profile_root) else { continue };
-            for profile in profiles.flatten() {
+            let profiles = match std::fs::read_dir(&profile_root) {
+                Ok(profiles) => profiles,
+                Err(e) if e.kind() == std::io::ErrorKind::NotFound => continue,
+                Err(e) => {
+                    return Err(format!(
+                        "浏览器目录读取失败：{}（{e}）",
+                        profile_root.display()
+                    ))
+                }
+            };
+            for profile in profiles {
+                let profile = profile.map_err(|e| e.to_string())?;
                 let profile_dir = profile.path();
-                if !profile_dir.is_dir() { continue }
+                if !std::fs::metadata(&profile_dir)
+                    .map_err(|e| e.to_string())?
+                    .is_dir()
+                {
+                    continue;
+                }
                 let profile_name = profile.file_name().to_string_lossy().to_string();
-                if profile_name != "Default" && !profile_name.starts_with("Profile ") { continue }
+                if profile_name != "Default" && !profile_name.starts_with("Profile ") {
+                    continue;
+                }
                 let path = profile_dir.join("Bookmarks");
-                if path.exists() { sources.push((format!("{} {}", name, profile_name), path)); }
+                if path.try_exists().map_err(|e| e.to_string())? {
+                    sources.push((format!("{} {}", name, profile_name), path));
+                }
             }
         }
     }
@@ -2578,42 +2659,97 @@ fn bookmark_sources() -> Vec<(String, PathBuf)> {
         let pb = browser_priority(browser_base(&b.0), default.as_deref());
         pa.cmp(&pb)
             .then_with(|| is_default_profile(&b.0).cmp(&is_default_profile(&a.0)))
+            .then_with(|| a.0.cmp(&b.0))
     });
-    sources
+    Ok(sources)
+}
+
+fn sync_bookmarks_now(app: &AppHandle) -> Result<SyncResult, String> {
+    let _guard = BOOKMARK_SYNC_LOCK.lock().map_err(|e| e.to_string())?;
+    let mut items = Vec::new();
+    for (source, path) in bookmark_sources()? {
+        let text = std::fs::read_to_string(&path)
+            .map_err(|e| format!("读取收藏夹失败（{}）：{e}", path.display()))?;
+        let json = parse_bookmarks(&text)?;
+        let favicons = load_favicon_map(path.parent().unwrap_or(Path::new("")));
+        collect_bookmarks(&json, &source, &favicons, &mut items);
+    }
+    let items = items.into_iter().map(synced_item).collect::<Vec<_>>();
+    let result = with_db(app, |conn| {
+        init_schema(conn)?;
+        sync::reconcile(conn, "bookmarks", &items, |_| false)
+    })?;
+    finish_sync(app, "lastWebsiteSync", &result)?;
+    Ok(result)
+}
+
+fn parse_bookmarks(text: &str) -> Result<serde_json::Value, String> {
+    let json: serde_json::Value = serde_json::from_str(text)
+        .map_err(|e| format!("收藏夹正在写入或格式无效，将在下次重试：{e}"))?;
+    fn valid_folder(node: &serde_json::Value) -> bool {
+        node.get("children")
+            .and_then(|v| v.as_array())
+            .is_some_and(|children| {
+                children.iter().all(|child| {
+                    if child.get("type").and_then(|v| v.as_str()) == Some("url") {
+                        child.get("url").is_some_and(|v| v.is_string())
+                            && child.get("name").is_some_and(|v| v.is_string())
+                    } else {
+                        valid_folder(child)
+                    }
+                })
+            })
+    }
+    let valid = match json.get("roots").and_then(|v| v.as_object()) {
+        Some(roots) => roots.values().all(valid_folder),
+        None => valid_folder(&json),
+    };
+    if !valid {
+        return Err("收藏夹结构无效，将在下次重试".into());
+    }
+    Ok(json)
 }
 
 #[tauri::command]
 async fn sync_bookmarks(app: AppHandle) -> Result<SyncResult, String> {
-    run_in_background(move || {
-        let mut items = Vec::new();
-        for (source, path) in bookmark_sources() {
-            let text = match std::fs::read_to_string(&path) {
-                Ok(value) => value,
-                Err(_) => continue,
-            };
-            let Ok(json) = serde_json::from_str::<serde_json::Value>(&text) else { continue };
-            let profile_dir = path
-                .parent()
-                .map(|p| p.to_path_buf())
-                .unwrap_or_else(|| PathBuf::from(""));
-            let favicons = load_favicon_map(&profile_dir);
-            collect_bookmarks(&json, &source, &favicons, &mut items);
-        }
-        let mut unique = HashMap::<String, SyncedItem>::new();
-        for item in items {
-            unique.entry(item.url.to_lowercase()).or_insert(item);
-        }
-        let items: Vec<SyncedItem> = unique.into_values().collect();
-        let result = merge_synced_items(&app, &items)?;
-        let millis = now_millis().to_string();
-        set_setting_sync(&app, "lastWebsiteSync", &millis)?;
-        let mut patch = HashMap::new();
-        patch.insert("lastWebsiteSync".to_string(), millis);
-        let _ = app.emit(SETTINGS_CHANGED_EVENT, patch);
-        let _ = app.emit(ITEMS_CHANGED_EVENT, ());
-        Ok(result)
-    })
-    .await
+    run_in_background(move || sync_bookmarks_now(&app)).await
+}
+
+// Workers live in the backend, so hiding/closing windows to the tray does not stop sync.
+// Each category runs independently; a slow application scan cannot delay file/bookmark sync.
+fn start_auto_sync(app: &AppHandle) {
+    for (setting, task) in [
+        (
+            Some("autoSyncApps"),
+            merge_scanned as fn(&AppHandle) -> Result<SyncResult, String>,
+        ),
+        (
+            None,
+            sync_bookmarks_now as fn(&AppHandle) -> Result<SyncResult, String>,
+        ),
+        (
+            None,
+            sync_folders_now as fn(&AppHandle) -> Result<SyncResult, String>,
+        ),
+    ] {
+        let handle = app.clone();
+        std::thread::spawn(move || loop {
+            if setting
+                .map(|key| read_bool_setting(&handle, key, true))
+                .unwrap_or(true)
+            {
+                match task(&handle) {
+                    Ok(result) => {
+                        for warning in result.warnings {
+                            eprintln!("[nexious sync] {warning}");
+                        }
+                    }
+                    Err(error) => eprintln!("[nexious sync] {error}"),
+                }
+            }
+            std::thread::sleep(std::time::Duration::from_secs(15));
+        });
+    }
 }
 
 // ---------- 窗口管理 ----------
@@ -2879,7 +3015,7 @@ fn main() {
         .plugin(shortcut_plugin)
         .setup(|app| {
             let handle = app.handle().clone();
-            with_db(&handle, |conn| init_schema(conn))?;
+            database::initialize(&db_file(&handle)?)?;
             let shortcut = with_db(&handle, |conn| {
                 init_schema(conn)?;
                 let mut stmt = conn.prepare("SELECT value FROM settings WHERE key='shortcut'").map_err(|e| e.to_string())?;
@@ -2971,48 +3107,7 @@ fn main() {
             if let Err(err) = setup_tray(app) {
                 eprintln!("[nexious] 托盘初始化失败：{err}");
             }
-            // 后台自动同步延迟错峰执行，避免开机瞬间与窗口初始化/用户操作争抢资源造成卡顿
-            {
-                let h = handle.clone();
-                std::thread::spawn(move || {
-                    std::thread::sleep(std::time::Duration::from_secs(if autostart { 20 } else { 6 }));
-                    let auto = with_db(&h, |conn| {
-                        Ok(conn
-                            .query_row(
-                                "SELECT value FROM settings WHERE key='autoSyncApps'",
-                                [],
-                                |row| row.get::<_, String>(0),
-                            )
-                            .ok())
-                    })
-                    .ok()
-                    .flatten()
-                    .unwrap_or_else(|| "true".into());
-                    if auto == "false" {
-                        return;
-                    }
-                    let stale = with_db(&h, |conn| {
-                        Ok(conn
-                            .query_row(
-                                "SELECT value FROM settings WHERE key='lastSync'",
-                                [],
-                                |row| row.get::<_, String>(0),
-                            )
-                            .ok())
-                    })
-                    .ok()
-                    .flatten()
-                    .and_then(|v| v.parse::<u128>().ok())
-                    .map(|last| now_millis().saturating_sub(last) > 24 * 3600 * 1000)
-                    .unwrap_or(true);
-                    if !stale {
-                        return;
-                    }
-                    if let Ok(r) = merge_scanned(&h) {
-                        let _ = r;
-                    }
-                });
-            }
+            start_auto_sync(&handle);
             // 启动数据去重：清理历史遗留的重复条目（延迟执行，避开启动高峰）
             {
                 let h = handle.clone();

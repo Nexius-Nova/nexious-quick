@@ -242,6 +242,7 @@ async function setCloseToTray(enabled: boolean) {
           <span v-else-if="updateState === 'outdated'" class="update-meta new">发现新版本 v{{ latestVersion }}，可前往下载安装包</span>
           <span v-else-if="updateState === 'error'" class="update-meta fail">检查失败：{{ updateError }}</span>
           <span v-else class="update-meta">检查 GitHub Releases 中发布的新版本</span>
+          <span class="update-meta">检查更新不会修改数据；下载后直接覆盖安装，保留启动项与设置，无需卸载。</span>
         </div>
         <div class="update-actions">
           <NButton v-if="updateState === 'outdated'" size="small" type="primary" @click="openReleasePage">前往下载</NButton>

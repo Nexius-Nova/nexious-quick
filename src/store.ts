@@ -140,8 +140,11 @@ export async function flushSettings() {
   }
 }
 
+let itemsLoadSeq = 0
 export async function reloadItems() {
-  store.items = sanitizeItems(await storage.loadItems())
+  const seq = ++itemsLoadSeq
+  const items = sanitizeItems(await storage.loadItems())
+  if (seq === itemsLoadSeq) store.items = items
 }
 
 /** 按类型加载启动项子集（application / website / folder），供设置页按需取数，避免整表拉取。 */
@@ -244,6 +247,7 @@ export async function initStore(options: { loadItems?: boolean } = {}) {
   await storage.onSettingsChanged(receiveSettings)
   applySettings(await storage.loadSettings())
   if (withItems) {
+    storage.onItemsChanged(() => void reloadItems())
     await reloadItems()
     await seedIfNeeded()
   }
@@ -256,22 +260,12 @@ export async function initStore(options: { loadItems?: boolean } = {}) {
     window.clearTimeout(settingsTimer)
     settingsTimer = window.setTimeout(() => void flushSettings(), 50)
   }, { flush: 'sync' })
-  if (withItems) {
-    storage.onItemsChanged(() => void reloadItems())
-  }
   window.addEventListener('pagehide', () => void flushSettings())
 }
 
 async function seedIfNeeded() {
-  if (isTauri) {
-    const seeded = store.settings.lastSync !== '' || store.items.length > 0
-    if (seeded) return
-    await seedWebAndFolders()
-    if (store.settings.autoSyncApps) {
-      invoke('sync_apps').then(() => reloadItems()).catch(() => {})
-    }
-    return
-  }
+  // 桌面数据由后台真实扫描生成，避免首次同步与默认条目写入竞争。
+  if (isTauri) return
   // 浏览器预览模式：注入演示数据
   if (store.items.length === 0) {
     await seedWebAndFolders()

@@ -27,7 +27,7 @@ type Tab = 'application' | 'website' | 'folder'
 const tab = ref<Tab>('application')
 const keyword = ref('')
 const syncing = ref(false)
-const syncResult = ref<{ added: number; updated: number; total: number } | null>(null)
+const syncResult = ref<{ added: number; updated: number; removed: number; total: number; warnings: string[] } | null>(null)
 const showModal = ref(false)
 const editing = ref<Item | null>(null)
 const form = ref<Partial<Item>>({})
@@ -219,15 +219,16 @@ async function addFolderRoot(path: string) {
     const added = folderRoots.value.find((r) => r.path.toLowerCase() === path.toLowerCase())
     const label = added ? displayRootName(added) : path
     message.success(`已加入并开始同步「${label}」…`)
-    // 新目录加入后立即单独同步一次，便于马上在启动器中搜索到
+    // 新目录加入后立即同步一次，便于马上在启动器中搜索到
     syncing.value = true
     try {
-      const r = await invoke<{ added: number; updated: number; total: number }>('sync_folders', {
+      const r = await invoke<{ added: number; updated: number; removed: number; total: number; warnings: string[] }>('sync_folders', {
         onlyPath: path,
       })
       syncResult.value = r
-      if (r.total === 0) message.warning(`「${label}」没有扫描到可索引的文件或文件夹`)
-      else message.success(`「${label}」同步完成：新增 ${r.added} 项，更新 ${r.updated} 项`)
+      if (r.warnings.length) message.warning(r.warnings[0])
+      else if (r.total === 0 && r.removed === 0) message.warning(`「${label}」没有扫描到可索引的文件或文件夹`)
+      else message.success(`「${label}」同步完成：新增 ${r.added} 项，更新 ${r.updated} 项，移除 ${r.removed} 项`)
     } catch (syncErr) {
       message.error(`同步「${label}」失败：${String(syncErr)}`)
     } finally {
@@ -241,7 +242,8 @@ async function addFolderRoot(path: string) {
 async function removeFolderRoot(path: string) {
   try {
     folderRoots.value = await invoke<FolderRoot[]>('remove_folder_root', { path })
-    message.success('已从同步列表移除')
+    await invoke('sync_folders')
+    message.success('已移出同步并更新索引')
   } catch (err) {
     message.error(String(err))
   }
@@ -261,6 +263,7 @@ async function browseNativeFolderRoot() {
 
 watch(tab, (current) => {
   visibleCount.value = PAGE_CHUNK
+  syncResult.value = null
   if (current === 'folder' && isTauri) void refreshFolderRoots()
   void loadRows()
 })
@@ -307,10 +310,11 @@ async function sync() {
         }
       }
       const command = tab.value === 'website' ? 'sync_bookmarks' : tab.value === 'folder' ? 'sync_folders' : 'sync_apps'
-      const r = await invoke<{ added: number; updated: number; total: number }>(command)
+      const r = await invoke<{ added: number; updated: number; removed: number; total: number; warnings: string[] }>(command)
       syncResult.value = r
-      if (r.total === 0) message.warning(tab.value === 'website' ? '未找到可同步的浏览器收藏夹' : '未找到可同步的数据')
-      else message.success(`同步完成：新增 ${r.added} 项，更新 ${r.updated} 项`)
+      if (r.warnings.length) message.warning(r.warnings[0])
+      else if (r.total === 0 && r.removed === 0) message.warning(tab.value === 'website' ? '未找到可同步的浏览器收藏夹' : '未找到可同步的数据')
+      else message.success(`同步完成：新增 ${r.added} 项，更新 ${r.updated} 项，移除 ${r.removed} 项`)
       // 同步写入较多，稍后重新拉取当前标签页数据
       scheduleRowsReload()
     } else {
@@ -646,8 +650,9 @@ async function browsePath() {
           </label>
           <div class="section-sub">
             上次同步 · {{ lastSyncText }}
-            <span v-if="tab === 'website'"> · 支持 Chrome、Edge、Brave 收藏夹</span>
-            <span v-else-if="tab === 'folder'"> · 可在下方浏览整台电脑，自由添加要同步的目录</span>
+            <span v-if="tab === 'website'"> · 自动同步 Chrome、Edge、Brave 收藏夹的新增、修改和删除</span>
+            <span v-else-if="tab === 'folder'"> · 自动同步已选目录的新增、修改和删除</span>
+            <span v-if="tab !== 'application' || autoSyncModel"> · 后台每轮完成后间隔 15 秒检查</span>
           </div>
         </div>
         <div class="section-tools">
@@ -665,7 +670,7 @@ async function browsePath() {
         <div class="sync-dirs-head">
           <div class="sync-dirs-info">
             <span class="sync-dirs-title">同步目录</span>
-            <span class="sync-dirs-sub">点「同步本地目录」会把所选目录里的文件/文件夹索引为可搜索的启动项（自动跳过隐藏与系统目录，按广度覆盖各子目录，单个目录上限约 2 万项）。</span>
+            <span class="sync-dirs-sub">已选目录会持续自动同步，文件新增、重命名或删除后自动更新搜索结果（自动跳过隐藏与系统目录，按广度覆盖各子目录，单个目录上限约 2 万项）。</span>
           </div>
           <div class="sync-dirs-actions">
             <button v-if="isTauri" class="ghost-btn small" type="button" @click="openFolderManager">
@@ -699,7 +704,8 @@ async function browsePath() {
       </div>
 
       <div v-if="syncResult" class="sync-result" role="status">
-        本次同步：新增 {{ syncResult.added }} 项，更新 {{ syncResult.updated }} 项，共 {{ syncResult.total }} 项
+        本次同步：新增 {{ syncResult.added }} 项，更新 {{ syncResult.updated }} 项，移除 {{ syncResult.removed }} 项，共 {{ syncResult.total }} 项
+        <div v-for="warning in syncResult.warnings" :key="warning">{{ warning }}</div>
       </div>
 
       <table class="data-table">
@@ -863,7 +869,7 @@ async function browsePath() {
           <FolderTree :added-paths="addedPaths" @add="addFolderRoot" />
         </div>
         <p class="fm-hint">
-          已加入的目录会显示在上方「同步目录」中；回到页面点击「同步本地目录」即可把其中的文件与文件夹索引为可搜索启动项。
+          已加入的目录会立即开始同步，并在后台持续自动更新；也可点击「同步本地目录」手动检查。
         </p>
       </div>
     </NModal>
