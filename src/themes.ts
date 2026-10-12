@@ -23,46 +23,42 @@ export interface UITheme {
   dark: SurfacePalette
 }
 
-const sans = "'Segoe UI', 'Microsoft YaHei UI', sans-serif"
-const serif = "'Georgia', 'Noto Serif SC', 'Microsoft YaHei', serif"
+const sans = "'Segoe UI Variable Text', 'Segoe UI', 'Microsoft YaHei UI', sans-serif"
 const palette = (window: string, sidebar: string, content: string, surface: string, input: string,
   text: string, secondary: string, muted: string, border: string, accent: string): SurfacePalette =>
   ({ window, sidebar, content, surface, input, text, secondary, muted, border, accent })
 
-// Keep the old accent keys so upgrading preserves the user's chosen family.
+// The selector keeps a compact swatch; each theme controls the entire workspace.
 export const UI_THEMES: UITheme[] = [
-  { key: 'blue', label: '澄净', description: '明亮留白 · 清晰层次', radius: 10, spacing: 24, font: sans,
-    shadow: '0 4px 20px rgb(27 47 81 / 4%)',
-    light: palette('#eaf0f8', '#e4ebf5', '#f4f7fb', '#ffffff', '#edf2f9', '#1e2e47', '#445771', '#667b96', '#d4deec', '#3264bb'),
-    dark: palette('#101823', '#152032', '#192537', '#202e43', '#152131', '#e6edf7', '#b7c8df', '#899fbd', '#33455f', '#8eb8ff') },
-  { key: 'violet', label: '柔雾', description: '柔和面板 · 舒展圆角', radius: 18, spacing: 28, font: sans,
-    shadow: '0 8px 28px rgb(74 45 100 / 6%)',
-    light: palette('#eee9f3', '#e9e0f0', '#f5f1f8', '#fffcff', '#eee7f3', '#3b2c49', '#655471', '#85718f', '#ded1e7', '#8152a3'),
-    dark: palette('#1d1725', '#251c30', '#2b2236', '#342a40', '#231b2d', '#f0e5f6', '#ceb9dd', '#a78db8', '#50405e', '#cca4ec') },
-  { key: 'cyan', label: '冰川', description: '冷调玻璃 · 轻盈边界', radius: 12, spacing: 24, font: sans,
-    shadow: '0 6px 22px rgb(24 79 91 / 5%)',
-    light: palette('#dfedf0', '#dcecf0', '#edf6f7', '#f8ffff', '#e2f0f3', '#213e46', '#4d6b74', '#65818b', '#c4dfe4', '#24798c'),
-    dark: palette('#102328', '#142e34', '#193238', '#203e45', '#122b32', '#e1f3f5', '#b2d2d8', '#87aeb6', '#34545e', '#80cede') },
-  { key: 'emerald', label: '林间', description: '苔绿底色 · 自然质感', radius: 9, spacing: 26, font: sans,
-    shadow: '0 4px 18px rgb(44 63 42 / 4%)',
-    light: palette('#e7ecdf', '#dfe7d8', '#f1f4eb', '#fbfcf5', '#e8eee1', '#303e2d', '#56664e', '#75806b', '#d3dcc9', '#567243'),
-    dark: palette('#192218', '#202d1f', '#263124', '#303d2c', '#1f2a1e', '#e6eede', '#c2d1b6', '#97ac87', '#46543e', '#b1ce8f') },
-  { key: 'orange', label: '纸页', description: '暖纸底色 · 书刊排版', radius: 3, spacing: 28, font: serif,
-    shadow: 'none',
-    light: palette('#e8dfcf', '#e9dfcb', '#f5efdf', '#fff9eb', '#eee5d3', '#42372b', '#6d5d49', '#8b7760', '#d8c9af', '#93603c'),
-    dark: palette('#241e17', '#30271d', '#362d22', '#40362a', '#2a231a', '#f2e6d1', '#d7c6a9', '#af997c', '#5b4c38', '#d8ad7c') },
-  { key: 'rose', label: '柔砂', description: '低饱和暖灰 · 柔软卡片', radius: 16, spacing: 26, font: sans,
-    shadow: '0 5px 22px rgb(89 51 55 / 5%)',
-    light: palette('#efdfda', '#ead7d2', '#faf0eb', '#fff9f5', '#f1e2dc', '#4d3535', '#7a5b58', '#987773', '#e5cec5', '#a05d60'),
-    dark: palette('#2c1d1e', '#362426', '#3c2b2b', '#493334', '#302123', '#f8e5df', '#dcbcb3', '#b58e87', '#624448', '#e6a7aa') },
-  { key: 'slate', label: '石墨', description: '中性对比 · 紧凑工作台', radius: 4, spacing: 18, font: sans,
-    shadow: 'none',
-    light: palette('#e0e1e2', '#dedfe0', '#efeff0', '#fafafa', '#e6e7e8', '#242629', '#50545a', '#70757c', '#c9cdd1', '#4c596b'),
-    dark: palette('#111213', '#191b1e', '#202226', '#292c31', '#17191c', '#eceef1', '#c1c6ce', '#949ca7', '#42474f', '#b6c5d9') },
+  { key: 'classic', label: 'Classic', description: '均衡的工作台主题', radius: 6, spacing: 20, font: sans, shadow: 'none',
+    light: palette('#fafafa', '#f3f3f4', '#ffffff', '#ffffff', '#f0f0f2', '#242528', '#565a61', '#747982', '#e2e3e6', '#d9363e'),
+    dark: palette('#141617', '#181a1c', '#1d1f21', '#242729', '#2c3033', '#f2f3f5', '#bcc1c7', '#929ba5', '#343a3f', '#f0444b') },
+  { key: 'clay', label: 'Clay', description: '锐利红的指挥面板', radius: 3, spacing: 18, font: sans, shadow: 'none',
+    light: palette('#f6f3f3', '#ebe6e6', '#faf8f8', '#ffffff', '#eee9e9', '#2d2425', '#665558', '#827477', '#d8ccce', '#c93441'),
+    dark: palette('#191516', '#211a1c', '#261f21', '#30272a', '#382e32', '#f4ebed', '#cfbdc2', '#a9929a', '#49383e', '#e94150') },
+  { key: 'knot', label: 'Knot', description: '结构化的蓝紫聚焦', radius: 8, spacing: 22, font: sans, shadow: 'none',
+    light: palette('#f6f6fb', '#efeff7', '#fafaff', '#ffffff', '#ececf5', '#29283b', '#5d5b74', '#7c7992', '#deddeb', '#625ad6'),
+    dark: palette('#18181e', '#1d1d25', '#23232d', '#2b2b37', '#323240', '#eeedf8', '#c1bfd6', '#9895af', '#3f3e50', '#8683f6') },
+  { key: 'dash', label: 'Dash', description: '清爽的青色运维模式', radius: 5, spacing: 18, font: sans, shadow: 'none',
+    light: palette('#f4f8f9', '#eaf1f3', '#fbfdfd', '#ffffff', '#eaf2f4', '#23363c', '#546c75', '#70868f', '#d7e4e8', '#087e91'),
+    dark: palette('#151a1c', '#1a2124', '#20292d', '#263237', '#2d3b42', '#e9f2f5', '#b8cbd2', '#8da5b0', '#384b54', '#23bed2') },
+  { key: 'forest', label: 'Forest', description: '平静的编辑绿系', radius: 7, spacing: 22, font: sans, shadow: 'none',
+    light: palette('#f6f8f5', '#edf1eb', '#fbfdf9', '#ffffff', '#ecf2e9', '#28372d', '#566d5d', '#75887a', '#dbe5d8', '#237d4b'),
+    dark: palette('#171c19', '#1c241f', '#232c26', '#29362e', '#314036', '#e9f2eb', '#bed0c2', '#96ac9d', '#3c4e42', '#3fbb75') },
+  { key: 'slate', label: 'Slate', description: '致密石墨控制室', radius: 3, spacing: 16, font: sans, shadow: 'none',
+    light: palette('#eff1f3', '#e4e8ed', '#f7f8fa', '#ffffff', '#e8edf2', '#242e3b', '#566578', '#788699', '#ccd5df', '#526d8c'),
+    dark: palette('#14181e', '#1a2028', '#202731', '#28313d', '#303c4b', '#eef2f7', '#bcc8d7', '#95a7bd', '#3c4c60', '#819bb9') },
+  { key: 'paper', label: 'Paper', description: '暖纸文档阅读优先', radius: 2, spacing: 24, font: sans, shadow: 'none',
+    light: palette('#f5f2eb', '#eeeadf', '#fbf9f2', '#fffdf7', '#f0eadf', '#3a332a', '#70614f', '#8b7d69', '#e2d8c8', '#986236'),
+    dark: palette('#211e19', '#28241e', '#302b24', '#393228', '#42392e', '#f2eadb', '#d3c3ab', '#af9b80', '#514533', '#cb9569') },
+  { key: 'amber', label: 'Amber', description: '高对比计划台', radius: 4, spacing: 20, font: sans, shadow: 'none',
+    light: palette('#f8f5ee', '#f0eadb', '#fffdf8', '#ffffff', '#f4eddd', '#362e1e', '#726143', '#8f7c57', '#e5d8bd', '#926600'),
+    dark: palette('#1b1914', '#242017', '#2b261b', '#342d1e', '#3f3522', '#fbf1d9', '#dcca9c', '#baa577', '#53442a', '#f3ac23') },
 ]
 
 export function uiTheme(key: string): UITheme {
-  return UI_THEMES.find((theme) => theme.key === key) ?? UI_THEMES[0]
+  const legacy: Record<string, string> = { blue: 'classic', violet: 'knot', cyan: 'dash', emerald: 'forest', orange: 'paper', rose: 'clay' }
+  return UI_THEMES.find((theme) => theme.key === (legacy[key] ?? key)) ?? UI_THEMES[0]
 }
 
 export function themeVariables(theme: UITheme, dark: boolean): Record<string, string> {

@@ -147,194 +147,88 @@ function onPlaceholderBlur() {
 </script>
 
 <template>
-  <div class="page" :class="{ dark: isDark }">
+  <div class="page appearance-page">
     <div class="page-header">
-      <div>
-        <h1>外观设置</h1>
-        <p>选择整套界面风格，设置窗口与快速启动保持一致。</p>
+      <div><h1>外观设置</h1><p>让工作空间保持你喜欢的样子。</p></div>
+      <span class="save-note" role="status">{{ store.settingsError ? '保存失败' : store.savingSettings ? '正在保存…' : '更改自动保存' }}</span>
+    </div>
+
+    <section class="appearance-styles" aria-labelledby="style-heading">
+      <div class="appearance-section-head">
+        <h2 id="style-heading">界面风格</h2>
+        <div class="segmented" aria-label="主题模式">
+          <button v-for="t in themes" :key="t.key" class="seg-item"
+            :class="{ active: store.settings.theme === t.key }" :aria-pressed="store.settings.theme === t.key" @click="setTheme(t.key)">
+            <NIcon :component="t.icon as never" :size="14" />{{ t.label }}
+          </button>
+        </div>
+      </div>
+      <div class="theme-styles">
+        <button v-for="item in UI_THEMES" :key="item.key" type="button" class="style-item"
+          :class="{ active: store.settings.accent === item.key }" :aria-pressed="store.settings.accent === item.key"
+          :aria-label="item.label + '，' + item.description" @click="setAccent(item.key)">
+          <span class="style-preview" :style="themeVariables(item, isDark)" aria-hidden="true">
+            <span class="style-swatch-accent"></span><span class="style-swatch-neutral"></span><span class="style-swatch-surface"></span>
+          </span>
+          <span class="style-copy"><span class="style-label">{{ item.label }}</span><span class="style-description">{{ item.description }}</span></span>
+          <span class="style-selected" aria-hidden="true">{{ store.settings.accent === item.key ? '✓' : '' }}</span>
+        </button>
+      </div>
+    </section>
+
+    <div class="launcher-preview-strip">
+      <div class="preview-caption"><span>启动器预览</span><small>{{ store.settings.searchWidth }} × {{ store.settings.searchHeight }} px</small></div>
+      <div ref="previewWallEl" class="preview-wall">
+        <div class="preview-stage" :style="previewStageStyle">
+          <div class="launcher preview-render" :style="previewRenderStyle" aria-hidden="true">
+            <div class="search-row">
+              <span v-if="store.settings.showIcons" class="brand-chip"><BrandIcon :size="18" /></span>
+              <input class="search-input" type="text" readonly tabindex="-1" :placeholder="store.settings.placeholderText || DEFAULT_SETTINGS.placeholderText" />
+              <span class="icon-btn"><NIcon :component="SettingsOutline" :size="17" /></span>
+            </div>
+          </div>
+        </div>
       </div>
     </div>
 
-    <div class="appearance-layout">
-      <div class="appearance-main">
-        <div class="field-group">
-          <div class="field-label">主题模式</div>
-          <div class="segmented">
-            <button
-              v-for="t in themes"
-              :key="t.key"
-              class="seg-item"
-              :class="{ active: store.settings.theme === t.key }"
-              @click="setTheme(t.key)"
-            >
-              <NIcon :component="t.icon as never" :size="14" />
-              {{ t.label }}
-            </button>
-          </div>
-        </div>
+    <section class="appearance-controls" aria-labelledby="window-heading">
+      <h2 id="window-heading">搜索窗口</h2>
+      <div class="preference-row"><label id="opacity-label">透明度<small>调整启动器背景的通透程度</small></label>
+        <div class="slider-row"><NSlider v-model:value="store.settings.opacity" aria-labelledby="opacity-label" :step="1" :min="30" :max="100" :tooltip="false" /><span class="slider-value">{{ store.settings.opacity }}%</span></div>
+      </div>
+      <div class="preference-row"><label id="width-label">宽度</label>
+        <div class="slider-row"><NSlider v-model:value="store.settings.searchWidth" aria-labelledby="width-label" :step="5" :min="320" :max="720" :tooltip="false" /><span class="slider-value">{{ store.settings.searchWidth }} px</span></div>
+      </div>
+      <div class="preference-row"><label id="height-label">高度</label>
+        <div class="slider-row"><NSlider v-model:value="store.settings.searchHeight" aria-labelledby="height-label" :step="2" :min="36" :max="64" :tooltip="false" /><span class="slider-value">{{ store.settings.searchHeight }} px</span></div>
+      </div>
+      <div class="preference-row"><label id="radius-label">圆角</label>
+        <div class="slider-row"><NSlider v-model:value="store.settings.searchRadius" aria-labelledby="radius-label" :step="1" :min="0" :max="32" :tooltip="false" /><span class="slider-value">{{ store.settings.searchRadius }} px</span></div>
+      </div>
+    </section>
 
-        <div class="field-group">
-          <div class="field-label">全局界面风格</div>
-          <p class="muted-tip">统一改变背景、侧栏、面板、表格、弹窗与启动器的材质和排版。</p>
-          <div class="theme-styles">
-            <button
-              v-for="item in UI_THEMES"
-              :key="item.key"
-              type="button"
-              class="style-item"
-              :class="{ active: store.settings.accent === item.key }"
-              :aria-pressed="store.settings.accent === item.key"
-              @click="setAccent(item.key)"
-            >
-              <span class="style-preview" :style="themeVariables(item, isDark)" aria-hidden="true">
-                <span class="style-preview-bar"><i></i><i></i><i></i></span>
-                <span class="style-preview-body">
-                  <span class="style-preview-nav"><i></i><i></i><i></i></span>
-                  <span class="style-preview-page"><b></b><span></span><span></span></span>
-                </span>
-              </span>
-              <span class="style-copy"><span class="style-label">{{ item.label }}</span>
-                <span class="style-description">{{ item.description }}</span></span>
-              <span v-if="store.settings.accent === item.key" class="style-selected" aria-hidden="true">✓</span>
-            </button>
-          </div>
-        </div>
-
-        <div class="field-group">
-          <div class="field-label">透明度</div>
-          <div class="slider-row">
-            <NSlider v-model:value="store.settings.opacity" :step="1" :min="30" :max="100" :tooltip="false" />
-            <span class="slider-value">{{ store.settings.opacity }}%</span>
-          </div>
-        </div>
-
-        <div class="field-group">
-          <div class="field-label">显示效果</div>
-          <div class="switch-list">
-            <div class="switch-row">
-              <span>启动时自动隐藏</span>
-              <NSwitch v-model:value="store.settings.autoHide" size="small" />
-            </div>
-            <div class="switch-row">
-              <span>鼠标悬停显示窗口</span>
-              <NSwitch v-model:value="store.settings.hoverShow" size="small" />
-            </div>
-            <div class="switch-row">
-              <span>显示启动器图标</span>
-              <NSwitch v-model:value="store.settings.showIcons" size="small" />
-            </div>
-          </div>
-          <p class="muted-tip">关闭后仅隐藏启动器左上角的品牌图标，搜索结果下拉列表中的图标始终显示。</p>
-        </div>
-
-        <div class="field-group narrow">
-          <div class="field-label">搜索框圆角</div>
-          <div class="slider-row">
-            <NSlider v-model:value="store.settings.searchRadius" :step="1" :min="0" :max="32" :tooltip="false" />
-            <span class="slider-value">{{ store.settings.searchRadius }}px</span>
-          </div>
-        </div>
-
-        <div class="field-group narrow">
-          <div class="field-label">搜索框宽度</div>
-          <div class="slider-row">
-            <NSlider v-model:value="store.settings.searchWidth" :step="5" :min="320" :max="720" :tooltip="false" />
-            <span class="slider-value">{{ store.settings.searchWidth }}px</span>
-          </div>
-          <p class="muted-tip">控制启动器主窗口的整体宽度。</p>
-        </div>
-
-        <div class="field-group narrow">
-          <div class="field-label">搜索框高度</div>
-          <div class="slider-row">
-            <NSlider v-model:value="store.settings.searchHeight" :step="2" :min="36" :max="64" :tooltip="false" />
-            <span class="slider-value">{{ store.settings.searchHeight }}px</span>
-          </div>
-          <p class="muted-tip">控制搜索输入框的垂直高度，启动器默认收起的窗口高度会随之变化。</p>
-        </div>
-
-        <div class="field-group">
-          <div class="field-label">启动器图标</div>
-          <div class="icon-options">
-            <button
-              v-for="opt in LAUNCHER_ICON_OPTIONS"
-              :key="opt.key"
-              type="button"
-              class="icon-option"
-              :class="{ active: store.settings.launcherIcon === opt.key }"
-              :aria-pressed="store.settings.launcherIcon === opt.key"
-              @click="pickBuiltinIcon(opt.key)"
-            >
-              <span class="brand-chip icon-option-chip"><img :src="opt.image" alt="" /></span>
-              <span>{{ opt.label }}</span>
-            </button>
-            <button
-              type="button"
-              class="icon-option"
-              :class="{ active: customIcon }"
-              :aria-pressed="customIcon"
-              title="上传自定义图标"
-              @click="openIconPicker"
-            >
-              <span class="brand-chip icon-option-chip">
-                <img v-if="customIcon" :src="store.settings.launcherIcon" alt="" />
-                <NIcon v-else :component="ImageOutline" :size="16" />
-              </span>
-              <span>{{ customIcon ? '自定义' : '自定义…' }}</span>
-            </button>
-          </div>
-          <div v-if="customIcon" class="icon-custom-row">
-            <span class="muted-text">已使用自定义图片，上传后自动缩放为 128×128。</span>
-            <button type="button" class="ghost-btn small" @click="resetIcon">恢复内置图标</button>
-          </div>
-          <p class="muted-tip">支持 PNG / JPG / WebP，选择后自动缩放，启动器、设置页与关于页将同步显示。</p>
+    <section class="appearance-controls" aria-labelledby="personal-heading">
+      <h2 id="personal-heading">个性化</h2>
+      <div class="preference-row"><label>显示启动器图标<small>搜索结果中的应用图标始终显示</small></label><NSwitch v-model:value="store.settings.showIcons" aria-label="显示启动器图标" size="small" /></div>
+      <div class="preference-row icon-preference"><label>启动器图标<small>支持 PNG、JPG、WebP，最大 3 MB</small></label>
+        <div class="icon-options">
+          <button v-for="opt in LAUNCHER_ICON_OPTIONS" :key="opt.key" type="button" class="icon-option"
+            :class="{ active: store.settings.launcherIcon === opt.key }" :aria-pressed="store.settings.launcherIcon === opt.key" @click="pickBuiltinIcon(opt.key)">
+            <span class="brand-chip icon-option-chip"><img :src="opt.image" alt="" /></span><span>{{ opt.label }}</span>
+          </button>
+          <button type="button" class="icon-option" :class="{ active: customIcon }" :aria-pressed="customIcon" @click="openIconPicker">
+            <span class="brand-chip icon-option-chip"><img v-if="customIcon" :src="store.settings.launcherIcon" alt="" /><NIcon v-else :component="ImageOutline" :size="16" /></span>
+            <span>{{ customIcon ? '更换图片' : '上传图片' }}</span>
+          </button>
+          <button v-if="customIcon" type="button" class="ghost-btn small" @click="resetIcon">恢复默认</button>
           <input ref="iconFileEl" type="file" accept="image/png,image/jpeg,image/webp" hidden @change="onIconFileChange" />
         </div>
-
-        <div class="field-group narrow">
-          <div class="field-label">搜索框提示文字</div>
-          <div class="placeholder-input-row">
-            <NInput
-              v-model:value="store.settings.placeholderText"
-              :maxlength="24"
-              clearable
-              placeholder="输入内容，快速启动..."
-              @blur="onPlaceholderBlur"
-            />
-            <button type="button" class="ghost-btn small" @click="onPlaceholderBlur">恢复默认</button>
-          </div>
-          <p class="muted-tip">显示在启动器搜索框中的灰色提示文字，留空会自动恢复默认。</p>
+      </div>
+      <div class="preference-row"><label for="launcher-placeholder">提示文字</label>
+        <div class="placeholder-input-row"><NInput v-model:value="store.settings.placeholderText" :input-props="{ id: 'launcher-placeholder' }" :maxlength="24" clearable :placeholder="DEFAULT_SETTINGS.placeholderText" @blur="onPlaceholderBlur" />
+          <button type="button" class="ghost-btn small" @click="store.settings.placeholderText = DEFAULT_SETTINGS.placeholderText">重置</button>
         </div>
       </div>
-
-      <div class="appearance-preview">
-        <div ref="previewWallEl" class="preview-wall">
-          <div class="preview-stage" :style="previewStageStyle">
-            <div
-              class="launcher preview-render"
-              :data-ui-style="store.settings.accent"
-              :class="{ dark: isDark }"
-              :style="previewRenderStyle"
-            >
-              <div class="search-row">
-                <button v-if="store.settings.showIcons" class="launcher-drag brand-chip" aria-hidden="true" tabindex="-1">
-                  <BrandIcon :size="18" />
-                </button>
-                <input
-                  class="search-input"
-                  type="text"
-                  readonly
-                  tabindex="-1"
-                  :placeholder="store.settings.placeholderText || '输入内容，快速启动...'"
-                />
-                <span class="icon-btn" aria-hidden="true">
-                  <NIcon :component="SettingsOutline" :size="17" />
-                </span>
-              </div>
-            </div>
-          </div>
-        </div>
-      </div>
-    </div>
+    </section>
   </div>
 </template>

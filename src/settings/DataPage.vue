@@ -611,7 +611,7 @@ async function browsePath() {
     <div class="page-header">
       <div>
         <h1>启动数据</h1>
-        <p>管理你的应用启动项，支持电脑应用、网站链接和文件/文件夹。</p>
+        <p>应用、收藏与文件，一处管理。</p>
       </div>
       <button class="ghost-btn" :disabled="syncing" @click="sync">
         <NIcon :component="RefreshOutline" :size="15" />

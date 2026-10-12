@@ -42,7 +42,7 @@ export interface AppSettings {
 
 export const DEFAULT_SETTINGS: AppSettings = {
   theme: 'system',
-  accent: 'blue',
+  accent: 'classic',
   opacity: 85,
   searchRadius: 16,
   searchWidth: 480,

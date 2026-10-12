@@ -20,6 +20,8 @@ import { useRoute } from 'vue-router'
 import { prefetchSettingsPages } from '../router'
 import { isTauri } from '../adapter'
 import { flushSettings, isDark, store } from '../store'
+import { prettyShortcut } from '../types'
+import packageInfo from '../../package.json'
 import BrandIcon from '../components/BrandIcon.vue'
 
 type Page = 'data' | 'appearance' | 'application'
@@ -153,7 +155,8 @@ onMounted(() => {
     </div>
     <div class="settings-body">
       <aside class="sider" :class="{ collapsed }">
-        <nav class="nav">
+        <div class="sider-caption">设置</div>
+        <nav class="nav" aria-label="设置导航">
           <router-link
             v-for="n in navs"
             :key="n.key"
@@ -167,7 +170,8 @@ onMounted(() => {
           </router-link>
         </nav>
         <div class="sider-foot">
-          <!-- <div class="sider-footer">v1.0.0</div> -->
+          <div class="sider-shortcut"><span>快速唤起</span><kbd>{{ prettyShortcut(store.settings.shortcut) }}</kbd></div>
+          <span>v{{ packageInfo.version }}</span>
         </div>
         <button
           class="sider-trigger"
@@ -176,7 +180,7 @@ onMounted(() => {
           :title="collapsed ? '展开菜单' : '收起菜单'"
           @click="toggleSidebar"
         >
-          <NIcon :component="collapsed ? ChevronForwardOutline : ChevronBackOutline" :size="15" />
+          <NIcon :component="collapsed ? ChevronForwardOutline : ChevronBackOutline" :size="15" /><span>收起侧栏</span>
         </button>
       </aside>
       <main class="s-content">

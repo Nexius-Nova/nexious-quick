@@ -194,7 +194,7 @@ async function setCloseToTray(enabled: boolean) {
 
 <template>
   <div class="page application-page">
-    <div class="page-header"><h1>应用设置</h1></div>
+    <div class="page-header"><div><h1>应用设置</h1><p>管理启动方式、快捷键与搜索习惯。</p></div></div>
     <section class="settings-section">
       <h2>启动与窗口</h2>
       <div class="switch-row">

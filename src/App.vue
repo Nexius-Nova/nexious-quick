@@ -36,6 +36,7 @@ const themeOverrides = computed<GlobalThemeOverrides>(() => ({
     borderRadius: `${activeTheme.value.radius}px`,
     fontFamily: activeTheme.value.font,
   },
+  Slider: { handleSize: '15px', railHeight: '3px' },
 }))
 watchEffect(() => {
   const root = document.documentElement
@@ -61,7 +62,7 @@ async function initialize() {
   error.value = ''
   kind.value = detectWindow()
   try {
-    // 设置窗口无需整表条目（启动数据页按需加载自己的子集），只有启动器全量加载供搜索
+    // 设置页按需取数；启动器订阅数据变更并通过后端搜索。
     await initStore({ loadItems: kind.value !== 'settings' })
     ready.value = true
   } catch (cause) {
